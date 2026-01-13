@@ -399,8 +399,9 @@
         "Typecheck passes"
       ],
       "priority": 23,
-      "passes": false,
-      "notes": "Depends on US-020. AI-generated, reviewed before launch."
+      "passes": true,
+      "notes": "Depends on US-020. AI-generated, reviewed before launch.",
+      "implementation": "site/terms.html - Comprehensive ToS with 19 sections covering acceptance, service description, account/subscription, acceptable use, NB integration, AI functionality, data/privacy, IP, service availability, termination, warranties, liability, indemnification, governing law, dispute resolution, changes, contact, severability, and entire agreement. site/privacy.html - Privacy Policy with 14 sections covering GDPR/CCPA compliance, data collection, usage, third-party sharing, security, retention, user rights, international transfers, Chrome extension permissions, and contact. Both pages share legal-page CSS styles with responsive design. Extension sidebar footer shows Terms | Privacy links."
     },
     {
       "id": "US-024",

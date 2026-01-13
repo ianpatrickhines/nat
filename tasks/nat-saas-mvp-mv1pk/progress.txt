@@ -502,3 +502,34 @@ Started: 2025-01-12
 - Fall-back to success state for direct page visits avoids confusing users who bookmark the page
 - Using path.resolve with __dirname ensures correct absolute paths in Vite config
 
+## 2025-01-12 - US-023: Terms of Service and Privacy Policy
+
+**Implementation:**
+- Created `site/terms.html` - Comprehensive Terms of Service with 19 sections:
+  - Acceptance of Terms, Service Description, Account & Subscription
+  - Acceptable Use, NationBuilder Integration, AI-Powered Functionality
+  - Data and Privacy, Intellectual Property, Service Availability
+  - Termination, Disclaimer of Warranties, Limitation of Liability
+  - Indemnification, Governing Law, Dispute Resolution
+  - Changes to Terms, Contact Information, Severability, Entire Agreement
+- Created `site/privacy.html` - Privacy Policy with 14 sections:
+  - Introduction, Information We Collect, How We Use Information
+  - Data Sharing and Third Parties, Data Security, Data Retention
+  - Your Rights and Choices, International Transfers
+  - GDPR Compliance (European Users), CCPA Compliance (California Users)
+  - Children's Privacy, Chrome Extension Permissions
+  - Changes to Policy, Contact Us
+- Updated `site/vite.config.ts` - Added terms.html and privacy.html to rollup inputs
+- Added legal page CSS styles (100+ lines) to `site/src/styles.css`:
+  - .legal-page, .legal-content, .legal-section, .legal-updated classes
+  - Responsive design with breakpoints at 768px and 480px
+- Updated `extension/src/components/Sidebar.tsx` - Added footer with legal links
+- Added sidebar footer CSS (30+ lines) to `extension/src/content/content.css`
+
+**Learnings:**
+- Footer links already existed in landing page (`/terms`, `/privacy`) - just needed the pages
+- Legal pages should include last updated date prominently for compliance
+- GDPR and CCPA sections require different language for different user rights
+- Chrome extension permissions section in privacy policy is important for store compliance
+- Sidebar footer provides consistent access to legal pages from within the extension
+
