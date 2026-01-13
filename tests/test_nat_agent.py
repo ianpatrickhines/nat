@@ -276,14 +276,21 @@ class TestHandler:
         body = json.loads(response["body"])
         assert body["error_code"] == "NB_NEEDS_REAUTH"
 
+    @patch("src.lambdas.nat_agent.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle")
     @patch("src.lambdas.nat_agent.handler.get_nb_tokens")
     @patch("src.lambdas.nat_agent.handler.get_user_info")
     def test_nb_tokens_missing(
-        self, mock_get_user: MagicMock, mock_get_tokens: MagicMock
+        self,
+        mock_get_user: MagicMock,
+        mock_get_tokens: MagicMock,
+        mock_billing: MagicMock,
+        mock_rate: MagicMock,
     ) -> None:
         """Test that missing NB tokens returns 403."""
         mock_get_user.return_value = {
             "user_id": TEST_USER_ID,
+            "tenant_id": TEST_TENANT_ID,
             "nb_connected": True,
             "nb_needs_reauth": False,
         }
@@ -299,6 +306,9 @@ class TestHandler:
         body = json.loads(response["body"])
         assert body["error_code"] == "NB_TOKENS_MISSING"
 
+    @patch("src.lambdas.nat_agent.handler.track_query_usage")
+    @patch("src.lambdas.nat_agent.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle")
     @patch("src.lambdas.nat_agent.handler.asyncio")
     @patch("src.lambdas.nat_agent.handler.get_nb_tokens")
     @patch("src.lambdas.nat_agent.handler.get_user_info")
@@ -307,10 +317,14 @@ class TestHandler:
         mock_get_user: MagicMock,
         mock_get_tokens: MagicMock,
         mock_asyncio: MagicMock,
+        mock_billing: MagicMock,
+        mock_rate: MagicMock,
+        mock_track: MagicMock,
     ) -> None:
         """Test successful agent query."""
         mock_get_user.return_value = {
             "user_id": TEST_USER_ID,
+            "tenant_id": TEST_TENANT_ID,
             "nb_connected": True,
             "nb_needs_reauth": False,
         }
@@ -336,6 +350,9 @@ class TestHandler:
         assert "Found John Smith" in body["response"]
         assert len(body["tool_calls"]) == 1
 
+    @patch("src.lambdas.nat_agent.handler.track_query_usage")
+    @patch("src.lambdas.nat_agent.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle")
     @patch("src.lambdas.nat_agent.handler.asyncio")
     @patch("src.lambdas.nat_agent.handler.get_nb_tokens")
     @patch("src.lambdas.nat_agent.handler.get_user_info")
@@ -344,10 +361,14 @@ class TestHandler:
         mock_get_user: MagicMock,
         mock_get_tokens: MagicMock,
         mock_asyncio: MagicMock,
+        mock_billing: MagicMock,
+        mock_rate: MagicMock,
+        mock_track: MagicMock,
     ) -> None:
         """Test query with page context."""
         mock_get_user.return_value = {
             "user_id": TEST_USER_ID,
+            "tenant_id": TEST_TENANT_ID,
             "nb_connected": True,
             "nb_needs_reauth": False,
         }
@@ -375,6 +396,8 @@ class TestHandler:
 
         assert response["statusCode"] == 200
 
+    @patch("src.lambdas.nat_agent.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle")
     @patch("src.lambdas.nat_agent.handler.asyncio")
     @patch("src.lambdas.nat_agent.handler.get_nb_tokens")
     @patch("src.lambdas.nat_agent.handler.get_user_info")
@@ -383,10 +406,13 @@ class TestHandler:
         mock_get_user: MagicMock,
         mock_get_tokens: MagicMock,
         mock_asyncio: MagicMock,
+        mock_billing: MagicMock,
+        mock_rate: MagicMock,
     ) -> None:
         """Test agent error handling."""
         mock_get_user.return_value = {
             "user_id": TEST_USER_ID,
+            "tenant_id": TEST_TENANT_ID,
             "nb_connected": True,
             "nb_needs_reauth": False,
         }
