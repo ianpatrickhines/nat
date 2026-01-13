@@ -83,6 +83,26 @@ export const Sidebar = forwardRef<SidebarHandle, SidebarProps>(
                 <AuthScreen authState={authState} />
               )}
             </main>
+
+            <footer className="nat-sidebar__footer">
+              <a
+                href="https://asknat.ai/terms"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="nat-sidebar__footer-link"
+              >
+                Terms
+              </a>
+              <span className="nat-sidebar__footer-separator">|</span>
+              <a
+                href="https://asknat.ai/privacy"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="nat-sidebar__footer-link"
+              >
+                Privacy
+              </a>
+            </footer>
           </div>
         ) : (
           <div className="nat-sidebar__collapsed-content">

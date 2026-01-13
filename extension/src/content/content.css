@@ -112,6 +112,35 @@
   min-height: 0;
 }
 
+/* Sidebar footer with legal links */
+.nat-sidebar__footer {
+  padding: 10px 16px;
+  border-top: 1px solid #e5e7eb;
+  background: #f9fafb;
+  font-size: 11px;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.nat-sidebar__footer-link {
+  color: #6b7280;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.nat-sidebar__footer-link:hover {
+  color: #4f46e5;
+  text-decoration: underline;
+}
+
+.nat-sidebar__footer-separator {
+  color: #d1d5db;
+}
+
 .nat-sidebar__placeholder {
   color: #6b7280;
   font-size: 13px;
