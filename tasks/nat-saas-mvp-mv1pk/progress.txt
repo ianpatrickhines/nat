@@ -533,3 +533,38 @@ Started: 2025-01-12
 - Chrome extension permissions section in privacy policy is important for store compliance
 - Sidebar footer provides consistent access to legal pages from within the extension
 
+
+## 2025-01-12 - US-024: Unit tests for agent tools
+
+**Implementation:**
+- Created `tests/tools/` directory with 14 test files covering all 66 NB API tool categories
+- Test file organization by category:
+  - test_signups.py: list_signups, get_signup, create_signup, update_signup, delete_signup
+  - test_tags.py: list_signup_tags, create_signup_tag, tag_signup, untag_signup, list_signup_taggings
+  - test_contacts.py: log_contact, list_contacts, get_contact, update_contact, delete_contact
+  - test_donations.py: list_donations, get_donation, create_donation, update_donation, delete_donation
+  - test_events.py: list_events, get_event, create_event, update_event, delete_event
+  - test_event_rsvps.py: list_event_rsvps, create_event_rsvp, update_event_rsvp, delete_event_rsvp
+  - test_paths.py: list_paths, get_path, list_path_journeys, assign_to_path, update_path_journey, delete_path_journey
+  - test_automations.py: list_automations, get_automation, enroll_in_automation, list_automation_enrollments
+  - test_lists.py: list_lists, get_list, get_list_members, add_to_list, remove_from_list
+  - test_surveys.py: list_surveys, get_survey, record_survey_response
+  - test_petitions.py: list_petitions, get_petition, sign_petition, list_petition_signatures
+  - test_memberships.py: list_memberships, create_membership, list_membership_types
+  - test_mailings.py: list_mailings, get_mailing
+  - test_misc.py: custom_fields, pledges, broadcasters, elections, voters, pages, donation_tracking
+- Created `tests/tools/conftest.py` with shared fixtures:
+  - run_async() helper for running async coroutines in sync tests
+  - create_list_response() and create_single_response() for JSON:API responses
+  - MockAsyncClient for mocking httpx client
+  - patch_get_client fixture to mock NationBuilderV2Client
+  - Sample test data constants for all resource types
+- Created `tests/conftest.py` to mock claude_agent_sdk when not installed
+- Total: 247 unit tests all passing
+
+**Learnings:**
+- Claude Agent SDK @tool decorator can be mocked by creating a fake module in conftest.py with sys.modules
+- pytest fixtures in conftest.py are automatically discovered by test files in the same directory
+- Using MagicMock(spec=) ensures mock methods match real interface
+- JSON:API responses have consistent structure: data (with type, id, attributes), meta, links
+- AsyncMock() works well for mocking async client methods like list(), get(), create()

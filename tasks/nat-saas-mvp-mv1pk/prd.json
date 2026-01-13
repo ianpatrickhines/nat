@@ -415,8 +415,9 @@
         "Typecheck passes"
       ],
       "priority": 24,
-      "passes": false,
-      "notes": "Depends on US-007. Use pytest with httpx mock."
+      "passes": true,
+      "notes": "Depends on US-007. Use pytest with httpx mock.",
+      "implementation": "tests/tools/ directory with 14 test files covering all NB API tool categories: test_signups.py, test_tags.py, test_contacts.py, test_donations.py, test_events.py, test_event_rsvps.py, test_paths.py, test_automations.py, test_lists.py, test_surveys.py, test_petitions.py, test_memberships.py, test_mailings.py, test_misc.py (custom_fields, pledges, broadcasters, elections, voters, pages, donation_tracking). 247 unit tests total with mocked NB API responses via fixtures in tests/tools/conftest.py. Tests cover success cases, error handling, pagination, filtering, includes, and edge cases. Added claude_agent_sdk mock in tests/conftest.py."
     },
     {
       "id": "US-025",
