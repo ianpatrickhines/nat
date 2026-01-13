@@ -26,14 +26,20 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # Environment variables
+NATIONS_TABLE = os.environ.get("NATIONS_TABLE", "nat-nations-dev")
 TENANTS_TABLE = os.environ.get("TENANTS_TABLE", "nat-tenants-dev")
 USERS_TABLE = os.environ.get("USERS_TABLE", "nat-users-dev")
 STRIPE_WEBHOOK_SECRET_NAME = os.environ.get(
     "STRIPE_WEBHOOK_SECRET_NAME", "nat/stripe-webhook-secret"
 )
 
-# Plan configuration
+# NEW PRICING MODEL: Nation-level plans
+# Nat: $29/mo, 500 queries/month
+# Nat Pro: $79/mo, unlimited queries
 PLAN_QUERY_LIMITS: dict[str, int] = {
+    "nat": 500,
+    "nat_pro": 999999,  # Effectively unlimited
+    # Legacy plans (backwards compatibility)
     "starter": 500,
     "team": 2000,
     "org": 5000,
@@ -41,6 +47,9 @@ PLAN_QUERY_LIMITS: dict[str, int] = {
 
 # Stripe price ID to plan mapping (configure these in production)
 PRICE_TO_PLAN: dict[str, str] = {
+    "price_nat_monthly": "nat",
+    "price_nat_pro_monthly": "nat_pro",
+    # Legacy price IDs (backwards compatibility)
     "price_starter_monthly": "starter",
     "price_team_monthly": "team",
     "price_org_monthly": "org",
@@ -140,19 +149,22 @@ def get_plan_from_price(price_id: str) -> str:
     if price_id in PRICE_TO_PLAN:
         return PRICE_TO_PLAN[price_id]
 
-    # Try to extract plan name from price ID (e.g., "price_starter_xyz" -> "starter")
-    for plan in ["starter", "team", "org"]:
+    # Try to extract plan name from price ID
+    # New format: "price_nat_xyz" -> "nat", "price_nat_pro_xyz" -> "nat_pro"
+    # Legacy format: "price_starter_xyz" -> "starter"
+    for plan in ["nat_pro", "nat", "starter", "team", "org"]:
         if plan in price_id.lower():
             return plan
 
-    return "starter"  # Default to starter if unknown
+    return "nat"  # Default to nat (basic plan) if unknown
 
 
 def handle_checkout_completed(session: dict[str, Any]) -> None:
     """
     Handle checkout.session.completed event.
 
-    Creates a new tenant record when a customer completes checkout.
+    Creates a new nation record when a customer completes checkout.
+    In the new model, subscriptions are tied to nations (not individual tenants).
     """
     customer_id = session.get("customer")
     subscription_id = session.get("subscription")
@@ -166,84 +178,79 @@ def handle_checkout_completed(session: dict[str, Any]) -> None:
 
     logger.info(f"Processing checkout completed for customer: {customer_id}")
 
-    # Get plan from line items or metadata
+    # Get plan and nation_slug from metadata
     metadata = session.get("metadata", {})
-    plan = metadata.get("plan", "starter")
+    plan = metadata.get("plan", "nat")  # Default to nat (basic plan)
+    nation_slug = metadata.get("nation_slug", "")
+
+    if not nation_slug:
+        logger.error(f"No nation_slug in metadata for customer {customer_id}")
+        # Can't proceed without nation_slug - this is critical for the new model
+        return
 
     # If subscription exists, we'll get more details from subscription.updated
-    # For now, create the tenant with basic info
+    # For now, create the nation with basic info
     dynamodb = get_dynamodb_resource()
-    tenants_table = dynamodb.Table(TENANTS_TABLE)
-    users_table = dynamodb.Table(USERS_TABLE)
+    nations_table = dynamodb.Table(NATIONS_TABLE)
 
     now = datetime.now(timezone.utc).isoformat()
-    tenant_id = str(uuid.uuid4())
-    user_id = str(uuid.uuid4())
 
-    # Check if tenant already exists for this customer
+    # Check if nation already exists
     try:
-        response = tenants_table.query(
-            IndexName="stripe-customer-index",
-            KeyConditionExpression="stripe_customer_id = :cid",
-            ExpressionAttributeValues={":cid": customer_id},
-        )
-        if response.get("Items"):
-            logger.info(f"Tenant already exists for customer {customer_id}")
-            tenant_id = response["Items"][0]["tenant_id"]
+        response = nations_table.get_item(Key={"nation_slug": nation_slug})
+        if response.get("Item"):
+            logger.info(f"Nation {nation_slug} already exists, updating")
+            # Update existing nation with subscription info
+            nations_table.update_item(
+                Key={"nation_slug": nation_slug},
+                UpdateExpression=(
+                    "SET stripe_customer_id = :cid, "
+                    "stripe_subscription_id = :sid, "
+                    "subscription_status = :status, "
+                    "subscription_plan = :plan, "
+                    "queries_limit = :limit, "
+                    "admin_email = :email, "
+                    "updated_at = :updated"
+                ),
+                ExpressionAttributeValues={
+                    ":cid": customer_id,
+                    ":sid": subscription_id or "",
+                    ":status": "active",
+                    ":plan": plan,
+                    ":limit": PLAN_QUERY_LIMITS.get(plan, 500),
+                    ":email": customer_email or "",
+                    ":updated": now,
+                },
+            )
         else:
-            # Create new tenant
-            tenant_item = {
-                "tenant_id": tenant_id,
+            # Create new nation record
+            nation_item = {
+                "nation_slug": nation_slug,
                 "stripe_customer_id": customer_id,
                 "stripe_subscription_id": subscription_id or "",
-                "stripe_subscription_status": "active",
-                "plan": plan,
-                "email": customer_email or "",
-                "queries_this_month": 0,
+                "subscription_status": "active",
+                "subscription_plan": plan,
+                "admin_email": customer_email or "",
+                "queries_used_this_period": 0,
                 "queries_limit": PLAN_QUERY_LIMITS.get(plan, 500),
-                "billing_cycle_start": now[:10],  # YYYY-MM-DD
+                "billing_period_start": now[:10],  # YYYY-MM-DD
                 "created_at": now,
                 "updated_at": now,
             }
-            tenants_table.put_item(Item=tenant_item)
-            logger.info(f"Created tenant {tenant_id} for customer {customer_id}")
+            nations_table.put_item(Item=nation_item)
+            logger.info(f"Created nation {nation_slug} for customer {customer_id}")
 
     except ClientError as e:
-        logger.error(f"DynamoDB error creating tenant: {e}")
+        logger.error(f"DynamoDB error creating/updating nation: {e}")
         raise
-
-    # Create initial user if email provided
-    if customer_email:
-        try:
-            # Check if user exists
-            response = users_table.query(
-                IndexName="email-index",
-                KeyConditionExpression="email = :email",
-                ExpressionAttributeValues={":email": customer_email},
-            )
-            if not response.get("Items"):
-                user_item = {
-                    "user_id": user_id,
-                    "tenant_id": tenant_id,
-                    "email": customer_email,
-                    "role": "admin",
-                    "nb_connected": False,
-                    "nb_needs_reauth": False,
-                    "created_at": now,
-                    "last_active_at": now,
-                }
-                users_table.put_item(Item=user_item)
-                logger.info(f"Created user {user_id} for tenant {tenant_id}")
-        except ClientError as e:
-            logger.error(f"DynamoDB error creating user: {e}")
-            # Don't raise - tenant creation succeeded
 
 
 def handle_subscription_updated(subscription: dict[str, Any]) -> None:
     """
     Handle customer.subscription.updated event.
 
-    Updates tenant subscription status, plan, and query limits.
+    Updates nation subscription status, plan, and query limits.
+    In the new model, subscriptions are tied to nations (not tenants).
     """
     customer_id = subscription.get("customer")
     subscription_id = subscription.get("id")
@@ -258,7 +265,7 @@ def handle_subscription_updated(subscription: dict[str, Any]) -> None:
     )
 
     # Determine plan from subscription items
-    plan = "starter"
+    plan = "nat"  # Default to nat (basic plan)
     items = subscription.get("items", {}).get("data", [])
     if items:
         price_id = items[0].get("price", {}).get("id", "")
@@ -266,33 +273,39 @@ def handle_subscription_updated(subscription: dict[str, Any]) -> None:
 
     # Get billing period start
     current_period_start = subscription.get("current_period_start")
-    billing_cycle_start = None
+    billing_period_start = None
     if current_period_start:
-        billing_cycle_start = datetime.fromtimestamp(
+        billing_period_start = datetime.fromtimestamp(
             current_period_start, tz=timezone.utc
         ).strftime("%Y-%m-%d")
 
     dynamodb = get_dynamodb_resource()
-    tenants_table = dynamodb.Table(TENANTS_TABLE)
+    nations_table = dynamodb.Table(NATIONS_TABLE)
 
     try:
-        # Find tenant by customer ID
-        response = tenants_table.query(
+        # Find nation by customer ID
+        response = nations_table.query(
             IndexName="stripe-customer-index",
             KeyConditionExpression="stripe_customer_id = :cid",
             ExpressionAttributeValues={":cid": customer_id},
         )
 
         if not response.get("Items"):
-            logger.warning(f"No tenant found for customer {customer_id}")
+            logger.warning(f"No nation found for customer {customer_id}")
             return
 
-        tenant = response["Items"][0]
-        tenant_id = tenant["tenant_id"]
+        nation = response["Items"][0]
+        nation_slug = nation["nation_slug"]
         now = datetime.now(timezone.utc).isoformat()
 
         # Build update expression
-        update_expr = "SET stripe_subscription_id = :sid, stripe_subscription_status = :status, #plan = :plan, queries_limit = :limit, updated_at = :updated"
+        update_expr = (
+            "SET stripe_subscription_id = :sid, "
+            "subscription_status = :status, "
+            "subscription_plan = :plan, "
+            "queries_limit = :limit, "
+            "updated_at = :updated"
+        )
         expr_values: dict[str, Any] = {
             ":sid": subscription_id,
             ":status": status,
@@ -302,19 +315,18 @@ def handle_subscription_updated(subscription: dict[str, Any]) -> None:
         }
 
         # Reset query count if billing cycle changed
-        old_billing_start = tenant.get("billing_cycle_start", "")
-        if billing_cycle_start and billing_cycle_start != old_billing_start:
-            update_expr += ", billing_cycle_start = :bcs, queries_this_month = :zero"
-            expr_values[":bcs"] = billing_cycle_start
+        old_billing_start = nation.get("billing_period_start", "")
+        if billing_period_start and billing_period_start != old_billing_start:
+            update_expr += ", billing_period_start = :bps, queries_used_this_period = :zero"
+            expr_values[":bps"] = billing_period_start
             expr_values[":zero"] = 0
 
-        tenants_table.update_item(
-            Key={"tenant_id": tenant_id},
+        nations_table.update_item(
+            Key={"nation_slug": nation_slug},
             UpdateExpression=update_expr,
-            ExpressionAttributeNames={"#plan": "plan"},
             ExpressionAttributeValues=expr_values,
         )
-        logger.info(f"Updated tenant {tenant_id} subscription status to {status}")
+        logger.info(f"Updated nation {nation_slug} subscription status to {status}")
 
     except ClientError as e:
         logger.error(f"DynamoDB error updating subscription: {e}")
@@ -325,7 +337,8 @@ def handle_subscription_deleted(subscription: dict[str, Any]) -> None:
     """
     Handle customer.subscription.deleted event.
 
-    Marks tenant subscription as cancelled.
+    Marks nation subscription as cancelled.
+    In the new model, subscriptions are tied to nations (not tenants).
     """
     customer_id = subscription.get("customer")
     subscription_id = subscription.get("id")
@@ -337,33 +350,33 @@ def handle_subscription_deleted(subscription: dict[str, Any]) -> None:
     logger.info(f"Processing subscription deletion for customer: {customer_id}")
 
     dynamodb = get_dynamodb_resource()
-    tenants_table = dynamodb.Table(TENANTS_TABLE)
+    nations_table = dynamodb.Table(NATIONS_TABLE)
 
     try:
-        # Find tenant by customer ID
-        response = tenants_table.query(
+        # Find nation by customer ID
+        response = nations_table.query(
             IndexName="stripe-customer-index",
             KeyConditionExpression="stripe_customer_id = :cid",
             ExpressionAttributeValues={":cid": customer_id},
         )
 
         if not response.get("Items"):
-            logger.warning(f"No tenant found for customer {customer_id}")
+            logger.warning(f"No nation found for customer {customer_id}")
             return
 
-        tenant = response["Items"][0]
-        tenant_id = tenant["tenant_id"]
+        nation = response["Items"][0]
+        nation_slug = nation["nation_slug"]
         now = datetime.now(timezone.utc).isoformat()
 
-        tenants_table.update_item(
-            Key={"tenant_id": tenant_id},
-            UpdateExpression="SET stripe_subscription_status = :status, updated_at = :updated",
+        nations_table.update_item(
+            Key={"nation_slug": nation_slug},
+            UpdateExpression="SET subscription_status = :status, updated_at = :updated",
             ExpressionAttributeValues={
                 ":status": "cancelled",
                 ":updated": now,
             },
         )
-        logger.info(f"Marked tenant {tenant_id} subscription as cancelled")
+        logger.info(f"Marked nation {nation_slug} subscription as cancelled")
 
     except ClientError as e:
         logger.error(f"DynamoDB error deleting subscription: {e}")
