@@ -102,8 +102,9 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
-      "notes": "Depends on US-005. NB refresh tokens are single-use."
+      "passes": true,
+      "notes": "Depends on US-005. NB refresh tokens are single-use.",
+      "implementation": "src/lambdas/token_refresh/handler.py - Scans Users table for nb_connected=true with nb_token_expires_at within 12-hour window. Refreshes via NB OAuth token endpoint (grant_type=refresh_token), stores new tokens in Secrets Manager, updates user record with new expiry. Sets nb_needs_reauth=true on failure. CloudFormation adds Lambda + EventBridge rule (rate(12 hours)). 18 unit tests in tests/test_token_refresh.py."
     },
     {
       "id": "US-007",

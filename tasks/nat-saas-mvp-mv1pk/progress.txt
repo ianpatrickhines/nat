@@ -92,3 +92,25 @@ Started: 2025-01-12
 - Token exchange uses urllib3 directly since boto3 doesn't have HTTP client
 - Secrets Manager `put_secret_value` raises `ResourceNotFoundException` if secret doesn't exist - need fallback to `create_secret`
 - OAuth callback returns redirect (302) not JSON - browser handles redirect automatically
+
+## 2025-01-12 - US-006: Token refresh Lambda with EventBridge
+
+**Implementation:**
+- Created `src/lambdas/token_refresh/handler.py` with full token refresh logic
+- Scans Users table for tokens expiring in next 12 hours (configurable via TOKEN_EXPIRY_WINDOW_HOURS)
+- Filter: nb_connected=true AND nb_needs_reauth!=true AND nb_token_expires_at <= window_end
+- Refreshes tokens via NB OAuth token endpoint with grant_type=refresh_token
+- Stores new tokens in Secrets Manager (NB refresh tokens are single-use, so new refresh_token must be saved)
+- Updates user record with new nb_token_expires_at on success
+- Sets nb_needs_reauth=true on failure (user will see "Reconnect" in extension)
+- CloudFormation: Lambda function (5 min timeout) + EventBridge rule with rate(12 hours) schedule
+- Handler returns summary: processed count, succeeded count, failed count, failure details
+- 18 unit tests covering all paths: success, no tokens, no refresh_token, API failure, batch processing
+
+**Learnings:**
+- NB refresh tokens are single-use - new refresh_token in response must be stored to replace old one
+- DynamoDB scan FilterExpression uses Attr() for attribute conditions (from boto3.dynamodb.conditions)
+- EventBridge rule uses AWS::Events::Rule with ScheduleExpression: 'rate(12 hours)'
+- Lambda permission for EventBridge uses Principal: events.amazonaws.com with SourceArn pointing to rule
+- Pagination handling needed for DynamoDB scan (LastEvaluatedKey/ExclusiveStartKey)
+- Lambda timeout increased to 300s to handle many users in single invocation
