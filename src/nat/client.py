@@ -8,7 +8,7 @@ Handles authentication, pagination, filtering, sideloading, and sideposting.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, List, Dict, cast
 import httpx
 
 
@@ -37,7 +37,7 @@ class NationBuilderV2Client:
     slug: str
     token: str
     timeout: float = 30.0
-    _client: httpx.AsyncClient = field(default=None, repr=False, init=False)
+    _client: httpx.AsyncClient | None = field(default=None, repr=False, init=False)
 
     def __post_init__(self) -> None:
         self._client = httpx.AsyncClient(
@@ -50,9 +50,17 @@ class NationBuilderV2Client:
             timeout=self.timeout
         )
 
+    @property
+    def client(self) -> httpx.AsyncClient:
+        """Get the HTTP client, raising if not initialized."""
+        if self._client is None:
+            raise RuntimeError("Client not initialized")
+        return self._client
+
     async def close(self) -> None:
         """Close the HTTP client."""
-        await self._client.aclose()
+        if self._client is not None:
+            await self._client.aclose()
 
     async def __aenter__(self) -> "NationBuilderV2Client":
         return self
@@ -66,9 +74,9 @@ class NationBuilderV2Client:
         filter: dict[str, Any] | None = None,
         page_size: int = 20,
         page_number: int = 1,
-        include: list[str] | None = None,
-        fields: dict[str, list[str]] | None = None,
-        extra_fields: dict[str, list[str]] | None = None,
+        include: List[str] | None = None,
+        fields: dict[str, List[str]] | None = None,
+        extra_fields: dict[str, List[str]] | None = None,
         sort: str | None = None
     ) -> dict[str, Any]:
         """
@@ -110,17 +118,17 @@ class NationBuilderV2Client:
         if sort:
             params["sort"] = sort
 
-        response = await self._client.get(f"/{resource}", params=params)
+        response = await self.client.get(f"/{resource}", params=params)
         response.raise_for_status()
-        return response.json()
+        return cast(Dict[str, Any], response.json())
 
     async def get(
         self,
         resource: str,
         id: str,
-        include: list[str] | None = None,
-        fields: dict[str, list[str]] | None = None,
-        extra_fields: dict[str, list[str]] | None = None
+        include: List[str] | None = None,
+        fields: dict[str, List[str]] | None = None,
+        extra_fields: dict[str, List[str]] | None = None
     ) -> dict[str, Any]:
         """
         Get a single resource by ID.
@@ -148,9 +156,9 @@ class NationBuilderV2Client:
             for resource_type, field_list in extra_fields.items():
                 params[f"extra_fields[{resource_type}]"] = ",".join(field_list)
 
-        response = await self._client.get(f"/{resource}/{id}", params=params)
+        response = await self.client.get(f"/{resource}/{id}", params=params)
         response.raise_for_status()
-        return response.json()
+        return cast(Dict[str, Any], response.json())
 
     async def create(
         self,
@@ -179,9 +187,9 @@ class NationBuilderV2Client:
         if relationships:
             payload["data"]["relationships"] = relationships
 
-        response = await self._client.post(f"/{resource}", json=payload)
+        response = await self.client.post(f"/{resource}", json=payload)
         response.raise_for_status()
-        return response.json()
+        return cast(Dict[str, Any], response.json())
 
     async def update(
         self,
@@ -213,9 +221,9 @@ class NationBuilderV2Client:
         if relationships:
             payload["data"]["relationships"] = relationships
 
-        response = await self._client.patch(f"/{resource}/{id}", json=payload)
+        response = await self.client.patch(f"/{resource}/{id}", json=payload)
         response.raise_for_status()
-        return response.json()
+        return cast(Dict[str, Any], response.json())
 
     async def delete(self, resource: str, id: str) -> bool:
         """
@@ -228,7 +236,7 @@ class NationBuilderV2Client:
         Returns:
             True if deletion was successful
         """
-        response = await self._client.delete(f"/{resource}/{id}")
+        response = await self.client.delete(f"/{resource}/{id}")
         response.raise_for_status()
         return True
 
@@ -258,19 +266,19 @@ class NationBuilderV2Client:
             "page[number]": page_number
         }
 
-        response = await self._client.get(
+        response = await self.client.get(
             f"/{resource}/{id}/{relationship}",
             params=params
         )
         response.raise_for_status()
-        return response.json()
+        return cast(Dict[str, Any], response.json())
 
     async def add_related(
         self,
         resource: str,
         id: str,
         relationship: str,
-        related_ids: list[str]
+        related_ids: List[str]
     ) -> dict[str, Any]:
         """
         Add related resources to a relationship.
@@ -288,19 +296,19 @@ class NationBuilderV2Client:
             "data": [{"type": relationship, "id": rid} for rid in related_ids]
         }
 
-        response = await self._client.post(
+        response = await self.client.post(
             f"/{resource}/{id}/relationships/{relationship}",
             json=payload
         )
         response.raise_for_status()
-        return response.json()
+        return cast(Dict[str, Any], response.json())
 
     async def remove_related(
         self,
         resource: str,
         id: str,
         relationship: str,
-        related_ids: list[str]
+        related_ids: List[str]
     ) -> bool:
         """
         Remove related resources from a relationship.
@@ -318,7 +326,7 @@ class NationBuilderV2Client:
             "data": [{"type": relationship, "id": rid} for rid in related_ids]
         }
 
-        response = await self._client.request(
+        response = await self.client.request(
             "DELETE",
             f"/{resource}/{id}/relationships/{relationship}",
             json=payload
