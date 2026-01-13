@@ -5,7 +5,8 @@
   "description": "AI assistant for NationBuilder - natural language access to your nation's data",
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "alarms"
   ],
   "host_permissions": [
     "*://*.nationbuilder.com/*"
