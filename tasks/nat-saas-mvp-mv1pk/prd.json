@@ -1,0 +1,447 @@
+{
+  "project": "Nat SaaS MVP",
+  "branchName": "ralph/nat-saas-mvp",
+  "description": "Multi-tenant SaaS NationBuilder assistant with Chrome extension, Stripe billing, and NB OAuth",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "CloudFormation base infrastructure",
+      "description": "As a developer, I want CloudFormation templates for DynamoDB tables (Tenants, Users) and IAM roles so that the backend has persistent storage.",
+      "acceptanceCriteria": [
+        "CloudFormation template creates Tenants table with tenant_id PK",
+        "CloudFormation template creates Users table with user_id PK and tenant_id GSI",
+        "IAM roles for Lambda execution with DynamoDB and Secrets Manager access",
+        "Template deploys successfully to dev environment",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": "Foundation for all other stories. Tables schema per SPEC.md Data Model section."
+    },
+    {
+      "id": "US-002",
+      "title": "API Gateway REST API setup",
+      "description": "As a developer, I want an API Gateway REST API with CORS configured so that the Chrome extension can communicate with the backend.",
+      "acceptanceCriteria": [
+        "API Gateway REST API created in CloudFormation",
+        "CORS enabled for *.nationbuilder.com origins",
+        "Custom domain support (placeholder for future)",
+        "Returns 200 OK on health check endpoint",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": "Depends on US-001. Add to existing CloudFormation template."
+    },
+    {
+      "id": "US-003",
+      "title": "Stripe webhook Lambda",
+      "description": "As a developer, I want a Lambda function that handles Stripe webhook events so that subscription status is tracked in DynamoDB.",
+      "acceptanceCriteria": [
+        "Lambda handles checkout.session.completed event",
+        "Lambda handles customer.subscription.updated event",
+        "Lambda handles customer.subscription.deleted event",
+        "Tenant record created/updated in DynamoDB with subscription status",
+        "Webhook signature verification implemented",
+        "Unit tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "Depends on US-001, US-002. Store Stripe webhook secret in Secrets Manager."
+    },
+    {
+      "id": "US-004",
+      "title": "Subscription verification middleware",
+      "description": "As a developer, I want middleware that verifies subscription status so that only paying customers can use the API.",
+      "acceptanceCriteria": [
+        "Middleware extracts user identity from request headers",
+        "Middleware checks tenant subscription status in DynamoDB",
+        "Returns 402 Payment Required if subscription inactive",
+        "Returns 403 if query limit exceeded",
+        "Unit tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "Depends on US-003. Shared utility used by agent Lambda."
+    },
+    {
+      "id": "US-005",
+      "title": "NationBuilder OAuth callback Lambda",
+      "description": "As a user, I want to connect my NationBuilder account so that Nat can access my nation's data.",
+      "acceptanceCriteria": [
+        "Lambda receives OAuth callback with authorization code",
+        "Lambda exchanges code for access_token and refresh_token",
+        "Tokens stored in Secrets Manager (nat/user/{user_id}/nb-tokens)",
+        "User record updated with nb_connected=true and nb_token_expires_at",
+        "Returns redirect to success page",
+        "Unit tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "Depends on US-001, US-002. NB client_id/secret in Secrets Manager."
+    },
+    {
+      "id": "US-006",
+      "title": "Token refresh Lambda with EventBridge",
+      "description": "As a developer, I want tokens refreshed proactively so that users don't experience auth failures.",
+      "acceptanceCriteria": [
+        "Lambda scans Users table for tokens expiring in next 12 hours",
+        "Lambda refreshes each token using refresh_token",
+        "New tokens stored in Secrets Manager",
+        "Failed refresh sets nb_needs_reauth=true",
+        "EventBridge rule triggers Lambda every 12 hours",
+        "Unit tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "Depends on US-005. NB refresh tokens are single-use."
+    },
+    {
+      "id": "US-007",
+      "title": "Port Nat agent to Lambda",
+      "description": "As a developer, I want the existing Nat agent code deployed as a Lambda function so that it can process user queries.",
+      "acceptanceCriteria": [
+        "Existing src/nat/ code packaged for Lambda",
+        "Lambda handler receives query and user context",
+        "Lambda retrieves NB tokens from Secrets Manager",
+        "Lambda invokes Claude API with all 66 tools",
+        "Lambda returns response (or error) as JSON",
+        "Unit tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": "Depends on US-005. Use existing tools.py and agent.py code."
+    },
+    {
+      "id": "US-008",
+      "title": "SSE streaming response handler",
+      "description": "As a user, I want to see Nat's response stream in real-time so that I know it's working.",
+      "acceptanceCriteria": [
+        "Lambda supports response streaming via Lambda URLs",
+        "API Gateway configured for streaming responses",
+        "Partial responses sent as SSE events",
+        "Final response includes complete message",
+        "Client can receive and parse SSE stream",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": "Depends on US-007. May need Lambda URL instead of API Gateway for streaming."
+    },
+    {
+      "id": "US-009",
+      "title": "Usage tracking and rate limiting",
+      "description": "As a developer, I want query usage tracked so that billing limits are enforced.",
+      "acceptanceCriteria": [
+        "Each query increments queries_this_month in Tenants table",
+        "Query rejected if queries_this_month >= queries_limit",
+        "5-second cooldown enforced between queries (429 if too fast)",
+        "Usage resets at billing_cycle_start",
+        "Unit tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": "Depends on US-004, US-007. Integrate with subscription middleware."
+    },
+    {
+      "id": "US-010",
+      "title": "Chrome extension scaffold",
+      "description": "As a developer, I want a Chrome extension project with Manifest V3, Vite, and Preact so that I can build the sidebar UI.",
+      "acceptanceCriteria": [
+        "Extension directory with manifest.json (Manifest V3)",
+        "Vite build configuration for extension",
+        "Preact configured as UI framework",
+        "Extension loads in Chrome without errors",
+        "Matches on *.nationbuilder.com only",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": "New extension/ directory in project root."
+    },
+    {
+      "id": "US-011",
+      "title": "Background service worker",
+      "description": "As a developer, I want a background service worker that manages auth state and API connections.",
+      "acceptanceCriteria": [
+        "Service worker maintains auth token in chrome.storage",
+        "Service worker handles messages from content scripts",
+        "Service worker manages SSE connection to backend",
+        "Service worker broadcasts responses to active tabs",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": "Depends on US-010. Manifest V3 uses service workers, not background pages."
+    },
+    {
+      "id": "US-012",
+      "title": "Content script and sidebar injection",
+      "description": "As a user, I want a sidebar that appears on NationBuilder pages so that I can chat with Nat.",
+      "acceptanceCriteria": [
+        "Content script injects sidebar container into NB pages",
+        "Sidebar is fixed to right edge, 350px wide",
+        "Sidebar is collapsible to thin strip (icon only)",
+        "Cmd+K / Ctrl+K toggles sidebar visibility",
+        "Sidebar does not break NB page layout",
+        "Verify in browser on nationbuilder.com",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": "Depends on US-010. Use CSS isolation (shadow DOM or scoped styles)."
+    },
+    {
+      "id": "US-013",
+      "title": "Chat UI component",
+      "description": "As a user, I want a chat interface so that I can send messages and see Nat's responses.",
+      "acceptanceCriteria": [
+        "Text input field at bottom of sidebar",
+        "Messages displayed in scrollable container",
+        "User messages right-aligned, Nat messages left-aligned",
+        "Streaming responses show typing indicator",
+        "Results show name, city/state, link to NB profile (no PII)",
+        "Verify in browser",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": "Depends on US-012. Connect to background service worker for API calls."
+    },
+    {
+      "id": "US-014",
+      "title": "Auth flow UI screens",
+      "description": "As a user, I want login and NB connection screens so that I can authenticate with the service.",
+      "acceptanceCriteria": [
+        "If not logged in: show 'Please subscribe' with Stripe link",
+        "If logged in but NB not connected: show 'Connect NationBuilder' button",
+        "If NB needs reauth: show 'Reconnect' banner with explanation",
+        "If subscription lapsed: show 'Payment failed' with update card link",
+        "Verify in browser",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": "Depends on US-013. State from background service worker."
+    },
+    {
+      "id": "US-015",
+      "title": "NB page context detection",
+      "description": "As a user, I want Nat to know what page I'm viewing so that queries are context-aware.",
+      "acceptanceCriteria": [
+        "Content script detects person profile pages (extracts name, ID)",
+        "Content script detects list pages (extracts list name)",
+        "Content script detects event pages (extracts event name)",
+        "Content script detects donation pages (extracts donation info)",
+        "Context shown at top of sidebar ('Viewing: Ian Hines')",
+        "Context sent with queries to backend",
+        "Verify in browser on different NB page types",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "Depends on US-012. Parse URL patterns and DOM elements."
+    },
+    {
+      "id": "US-016",
+      "title": "Confirmation dialogs",
+      "description": "As a user, I want confirmation before destructive operations so that I don't accidentally modify data.",
+      "acceptanceCriteria": [
+        "Backend flags responses requiring confirmation",
+        "UI shows confirmation dialog with summary of action",
+        "Dialog has Proceed and Cancel buttons",
+        "Proceed sends confirmation to backend, action executes",
+        "Cancel dismisses dialog, no action taken",
+        "Verify in browser",
+        "Typecheck passes"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": "Depends on US-013. Backend tool responses include confirmation_required flag."
+    },
+    {
+      "id": "US-017",
+      "title": "Session undo",
+      "description": "As a user, I want to undo recent actions so that I can recover from mistakes.",
+      "acceptanceCriteria": [
+        "Frontend tracks actions taken this session",
+        "User can say 'undo that' and Nat reverses last action",
+        "Undo stack clears when tab closes",
+        "Only Nat actions are undoable (not manual NB actions)",
+        "Undo tells user what was reversed",
+        "Typecheck passes"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": "Depends on US-013. Session storage in extension, undo logic in agent."
+    },
+    {
+      "id": "US-018",
+      "title": "Error handling UI",
+      "description": "As a user, I want clear error messages so that I understand what went wrong.",
+      "acceptanceCriteria": [
+        "NB API errors: 'NationBuilder isn't responding right now.'",
+        "Claude API errors: 'Nat is temporarily unavailable.'",
+        "Permission errors: 'Your NB account doesn't have permission to...'",
+        "Query limit errors: 'You've reached your monthly limit. [Upgrade]'",
+        "Rate limit errors: 'Slow down! Wait a few seconds.'",
+        "Verify in browser with mocked errors",
+        "Typecheck passes"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": "Depends on US-013. Natural language, no technical jargon."
+    },
+    {
+      "id": "US-019",
+      "title": "Tutorial walkthrough",
+      "description": "As a first-time user, I want a guided tutorial so that I learn how to use Nat.",
+      "acceptanceCriteria": [
+        "Tutorial shows on first use (after NB connection)",
+        "Step 1: Welcome + what Nat can do",
+        "Step 2: Example queries to try",
+        "Step 3: How to ask for help",
+        "Step 4: How confirmations work",
+        "Tutorial completion stored in chrome.storage",
+        "Skip button available",
+        "Verify in browser",
+        "Typecheck passes"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": "Depends on US-014. Show after successful NB OAuth."
+    },
+    {
+      "id": "US-020",
+      "title": "Landing page with pricing",
+      "description": "As a visitor, I want a landing page explaining Nat so that I can decide to subscribe.",
+      "acceptanceCriteria": [
+        "Landing page with value proposition",
+        "Pricing table: Starter $49, Team $149, Organization $399",
+        "Feature comparison between tiers",
+        "Subscribe buttons link to Stripe Checkout",
+        "Mobile responsive",
+        "Verify in browser",
+        "Typecheck passes"
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": "New site/ directory. Static HTML/CSS or simple framework."
+    },
+    {
+      "id": "US-021",
+      "title": "Stripe Checkout integration",
+      "description": "As a visitor, I want to pay via Stripe Checkout so that I can subscribe to Nat.",
+      "acceptanceCriteria": [
+        "Stripe products created for each tier",
+        "Subscribe button creates Stripe Checkout session",
+        "Checkout includes customer email collection",
+        "Success URL includes session ID for verification",
+        "Cancel URL returns to pricing page",
+        "Typecheck passes"
+      ],
+      "priority": 21,
+      "passes": false,
+      "notes": "Depends on US-020. Use Stripe Checkout Sessions API."
+    },
+    {
+      "id": "US-022",
+      "title": "Post-payment success page",
+      "description": "As a new customer, I want a success page after payment so that I know what to do next.",
+      "acceptanceCriteria": [
+        "Success page confirms subscription is active",
+        "Shows 'Install Chrome Extension' with Web Store link",
+        "Explains next steps (install → connect NB → start using)",
+        "Verify in browser after Stripe test checkout",
+        "Typecheck passes"
+      ],
+      "priority": 22,
+      "passes": false,
+      "notes": "Depends on US-021. Verify subscription via Stripe API."
+    },
+    {
+      "id": "US-023",
+      "title": "Terms of Service and Privacy Policy",
+      "description": "As a visitor, I want to read Terms of Service and Privacy Policy so that I understand the agreement.",
+      "acceptanceCriteria": [
+        "Terms of Service page covering usage rules, billing, liability",
+        "Privacy Policy page covering data collection, GDPR compliance",
+        "Links in footer of landing page",
+        "Links in extension settings",
+        "Typecheck passes"
+      ],
+      "priority": 23,
+      "passes": false,
+      "notes": "Depends on US-020. AI-generated, reviewed before launch."
+    },
+    {
+      "id": "US-024",
+      "title": "Unit tests for agent tools",
+      "description": "As a developer, I want unit tests for all 66 NB API tools so that I can catch regressions.",
+      "acceptanceCriteria": [
+        "Test file for each tool category (signups, tags, donations, etc.)",
+        "Tests use mocked NB API responses",
+        "Tests cover success and error cases",
+        "All tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 24,
+      "passes": false,
+      "notes": "Depends on US-007. Use pytest with httpx mock."
+    },
+    {
+      "id": "US-025",
+      "title": "Integration tests for OAuth and Stripe",
+      "description": "As a developer, I want integration tests for auth flows so that I can verify end-to-end behavior.",
+      "acceptanceCriteria": [
+        "Test NB OAuth callback with mocked NB API",
+        "Test token refresh with mocked NB API",
+        "Test Stripe webhook handling with test events",
+        "Test subscription verification flow",
+        "All tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 25,
+      "passes": false,
+      "notes": "Depends on US-003, US-005, US-006."
+    },
+    {
+      "id": "US-026",
+      "title": "E2E tests with Playwright",
+      "description": "As a developer, I want E2E tests for the Chrome extension so that I can verify user flows.",
+      "acceptanceCriteria": [
+        "Playwright configured for Chrome extension testing",
+        "Test: extension sidebar renders on NB page",
+        "Test: auth flow shows correct states",
+        "Test: chat message round-trip (mocked backend)",
+        "All tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 26,
+      "passes": false,
+      "notes": "Depends on US-012, US-013, US-014."
+    },
+    {
+      "id": "US-027",
+      "title": "GitHub Actions CI/CD pipeline",
+      "description": "As a developer, I want automated deployment so that code changes are deployed safely.",
+      "acceptanceCriteria": [
+        "GitHub Actions workflow for test on PR",
+        "GitHub Actions workflow for deploy to staging on main merge",
+        "Manual approval step for production deploy",
+        "CloudFormation deployment via AWS CLI",
+        "Extension build artifacts uploaded to release",
+        "Typecheck passes"
+      ],
+      "priority": 27,
+      "passes": false,
+      "notes": "Depends on US-024, US-025, US-026. Use GitHub environments."
+    }
+  ]
+}
