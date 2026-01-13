@@ -137,8 +137,9 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": "Depends on US-007. May need Lambda URL instead of API Gateway for streaming."
+      "passes": true,
+      "notes": "Depends on US-007. May need Lambda URL instead of API Gateway for streaming.",
+      "implementation": "src/lambdas/nat_agent_streaming/handler.py - New streaming Lambda handler with Lambda URL for true SSE streaming. Uses RESPONSE_STREAM invoke mode. Emits SSE events: text (partial responses), tool_use (tool invocations), tool_result (results), error, and done (final complete response with all tool_calls). CloudFormation adds NatAgentStreamingFunction + NatAgentStreamingUrl (Lambda Function URL with CORS). 25 unit tests in tests/test_nat_agent_streaming.py."
     },
     {
       "id": "US-009",
