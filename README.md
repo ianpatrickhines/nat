@@ -152,4 +152,4 @@ The NationBuilder V2 API uses JSON:API format. Key concepts:
 
 ## License
 
-MIT
+[O'Sassy License](LICENSE.md) - Open source with SaaS rights reserved. Free to use, modify, and self-host. Cannot be offered as a competing hosted service.
