@@ -332,8 +332,9 @@
         "Typecheck passes"
       ],
       "priority": 19,
-      "passes": false,
-      "notes": "Depends on US-014. Show after successful NB OAuth."
+      "passes": true,
+      "notes": "Depends on US-014. Show after successful NB OAuth.",
+      "implementation": "extension/src/components/Tutorial.tsx - New 4-step tutorial component: Welcome + what Nat can do (layer icon), Example queries with 4 suggestions (search icon), Getting help with natural language examples (question icon), Confirmations & Safety (shield icon). Uses useTutorialState() hook that checks chrome.storage.local for 'nat_tutorial_completed' key. Sidebar.tsx shows tutorial when showChat && showTutorial (after NB connection but before completion). Progress dots navigation, Skip/Next buttons, keyboard navigation (Enter/Right, Left, Escape). 180 lines CSS with animations."
     },
     {
       "id": "US-020",

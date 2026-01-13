@@ -386,3 +386,29 @@ Started: 2025-01-12
 - Rate limit errors benefit from showing the actual wait time via retryAfter parameter
 - Catching unknown errors and trying to infer context (e.g., checking if "nationbuilder" is in error message) provides better fallback UX
 
+## 2025-01-12 - US-019: Tutorial walkthrough
+
+**Implementation:**
+- Created `extension/src/components/Tutorial.tsx` with 4-step guided walkthrough
+- Step 1: "Welcome to Nat!" - Introduces Nat as AI assistant for NationBuilder
+- Step 2: "What Nat Can Do" - Shows 4 example queries (donors, volunteers, lists, events)
+- Step 3: "Getting Help" - Explains natural language queries with examples
+- Step 4: "Confirmations & Safety" - Reassures users about data protection
+- Tutorial completion stored in `chrome.storage.local` with key `nat_tutorial_completed`
+- `useTutorialState()` hook checks storage and exposes showTutorial/completeTutorial
+- Sidebar.tsx shows tutorial when user is authenticated but hasn't completed tutorial
+- Skip button available on every step (calls handleComplete immediately)
+- Keyboard navigation: Enter/ArrowRight (next), ArrowLeft (back), Escape (skip)
+- Progress dots allow clicking to any step
+- "Get Started" button on final step
+- 180 lines CSS with bounce animation for icon, fade animation for content
+
+**Learnings:**
+- Pattern: Show onboarding AFTER auth flow completes but BEFORE main UI renders
+- Using `chrome.storage.local` is appropriate for tutorial state (persists across sessions)
+- `useTutorialState` hook pattern mirrors `useAuthState` pattern - fetch async then update state
+- JSX.Element type must be imported from 'preact' explicitly for TypeScript
+- Chrome extension testing with Playwright requires persistent context + --load-extension flag (not supported in standard Playwright)
+- Loading state should combine auth loading AND tutorial loading to avoid flicker
+- Conditional rendering order matters: loading → tutorial → chat ensures smooth UX
+
