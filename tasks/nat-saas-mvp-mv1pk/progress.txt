@@ -33,3 +33,42 @@ Started: 2025-01-12
 - GatewayResponse resources are required for CORS headers on error responses (4XX/5XX)
 - Custom domain parameter left commented out as placeholder - will need ACM certificate and Route 53 for full implementation
 - OPTIONS preflight methods required for each resource that will receive cross-origin requests
+
+## 2025-01-12 - US-003: Stripe webhook Lambda
+
+**Implementation:**
+- Created `src/lambdas/stripe_webhook/handler.py` with full Lambda handler
+- Webhook signature verification using HMAC-SHA256 with timestamp tolerance (5 min)
+- `checkout.session.completed`: Creates tenant record with plan, query limits, billing cycle; creates initial admin user
+- `customer.subscription.updated`: Updates subscription status, plan, query limits; resets usage count on new billing cycle
+- `customer.subscription.deleted`: Marks subscription as cancelled
+- CloudFormation: Lambda function, Lambda permission, `/stripe/webhook` API Gateway resource with POST + OPTIONS
+- Webhook secret retrieved from Secrets Manager (`nat/stripe-webhook-secret-${Environment}`)
+- 22 unit tests covering all event handlers, signature verification, edge cases
+
+**Learnings:**
+- Stripe signature header can be `Stripe-Signature` or `stripe-signature` depending on API Gateway configuration - handle both
+- DynamoDB GSI queries return list even for single matches - always check `Items` array
+- Plan name can be inferred from Stripe price_id if explicit mapping not configured
+- mypy strict mode requires explicit type annotations for all variables even when obviously string (e.g., `secret: str = response.get("SecretString", "")`)
+- Lambda ZipFile in CloudFormation is placeholder only - actual code deployed separately via CI/CD
+
+## 2025-01-12 - US-004: Subscription verification middleware
+
+**Implementation:**
+- Created `src/lambdas/shared/subscription_middleware.py` as reusable middleware
+- Extracts user identity from `X-Nat-User-Id` and `X-Nat-Tenant-Id` headers (case-insensitive)
+- Looks up user in Users table to get tenant_id if not provided in headers
+- Checks tenant subscription status - allows `active` and `trialing` statuses
+- Returns 401 Unauthorized if user header missing or user not found
+- Returns 402 Payment Required if subscription is inactive (cancelled/past_due/unpaid)
+- Returns 403 Forbidden if query limit exceeded (queries_this_month >= queries_limit)
+- Supports decorator pattern via `@SubscriptionMiddleware()` for Lambda handlers
+- Added `src/__init__.py` and `src/lambdas/__init__.py` for proper module structure
+- 26 unit tests covering all error cases and success paths
+
+**Learnings:**
+- mypy `--explicit-package-bases` flag needed to avoid "module found twice" errors with nested packages
+- API Gateway may lowercase headers - normalize to lowercase for comparison
+- TypedDict is useful for documenting Lambda response structure while maintaining dict compatibility
+- Decorator pattern allows clean integration with existing Lambda handlers while providing error handling

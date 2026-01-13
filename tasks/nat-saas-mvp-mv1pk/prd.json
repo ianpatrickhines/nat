@@ -49,8 +49,9 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
-      "notes": "Depends on US-001, US-002. Store Stripe webhook secret in Secrets Manager."
+      "passes": true,
+      "notes": "Depends on US-001, US-002. Store Stripe webhook secret in Secrets Manager.",
+      "implementation": "src/lambdas/stripe_webhook/handler.py - Full webhook handler with HMAC-SHA256 signature verification, handles checkout.session.completed (creates tenant+user), customer.subscription.updated (updates status/plan/resets usage), customer.subscription.deleted (marks cancelled). CloudFormation adds Lambda + API Gateway POST /stripe/webhook. 22 unit tests in tests/test_stripe_webhook.py."
     },
     {
       "id": "US-004",
@@ -65,8 +66,9 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": "Depends on US-003. Shared utility used by agent Lambda."
+      "passes": true,
+      "notes": "Depends on US-003. Shared utility used by agent Lambda.",
+      "implementation": "src/lambdas/shared/subscription_middleware.py - Extracts X-Nat-User-Id/X-Nat-Tenant-Id headers, looks up user→tenant→subscription in DynamoDB, returns 402 for inactive (cancelled/past_due/unpaid), 403 for exceeded query limit. Supports decorator pattern for Lambda handlers. 26 unit tests in tests/test_subscription_middleware.py."
     },
     {
       "id": "US-005",
