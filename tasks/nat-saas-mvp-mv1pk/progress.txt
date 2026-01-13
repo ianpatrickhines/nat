@@ -331,3 +331,29 @@ Started: 2025-01-12
 - StreamingState needs to preserve currentQuery and currentContext for re-submission after confirmation
 - Modal overlay should capture clicks to close, but dialog click should not propagate
 - Escape key should cancel, Enter key should confirm
+## 2025-01-12 - US-017: Session undo
+
+**Implementation:**
+- Created `extension/src/utils/undoStack.ts` - Central module for undo tracking
+- UndoableAction type: id, timestamp, toolName, toolInput, description, undoType, undoData
+- UndoType enum: delete_created, recreate_deleted, restore_updated, remove_from_list, add_to_list, remove_tag, add_tag, not_undoable
+- UNDO_CONFIGS maps tool names to their undo configurations (description generator, undoData extractor)
+- Uses sessionStorage (clears automatically when tab closes)
+- recordAction() stores completed tool actions with undo metadata
+- Tracked tools: create_signup, create_contact, create_donation, create_event_rsvp, add_to_list, remove_from_list, add_signup_tagging, remove_signup_tagging
+- Chat.tsx imports getUndoStack() and passes stack with SUBMIT_QUERY
+- Background worker passes undoStack through to backend
+- Backend: _get_undo_instruction() generates human-readable undo instructions
+- Backend: stream_agent_response detects undo-related phrases ("undo", "revert", "reverse", "take back", etc.)
+- When undo detected and stack not empty, adds context section with recent actions and their undo instructions
+- Agent can then follow instructions to call the reverse tool
+- 10 unit tests added for _get_undo_instruction()
+
+**Learnings:**
+- sessionStorage is perfect for tab-scoped state - clears automatically on close, no cleanup needed
+- Undo requires knowing: original action, data needed for reversal, and how to execute reversal
+- Some actions can't be undone (deletes without stored data, updates without prior state)
+- Passing full undo stack to backend allows agent to see history without frontend parsing
+- Undo phrases should be detected case-insensitively with multiple variations
+- Context sections in prompt are powerful for giving agent structured knowledge
+

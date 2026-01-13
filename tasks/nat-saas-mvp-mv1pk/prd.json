@@ -294,8 +294,9 @@
         "Typecheck passes"
       ],
       "priority": 17,
-      "passes": false,
-      "notes": "Depends on US-013. Session storage in extension, undo logic in agent."
+      "passes": true,
+      "notes": "Depends on US-013. Session storage in extension, undo logic in agent.",
+      "implementation": "Extension: undoStack.ts utility in extension/src/utils/ tracks UndoableAction records in sessionStorage (clears on tab close). Tracks: create_signup, create_contact, create_donation, create_event_rsvp, add_to_list, remove_from_list, add_signup_tagging, remove_signup_tagging. Chat.tsx passes undo stack with queries. Backend: stream_agent_response receives undo_stack parameter. Detects undo-related queries ('undo', 'revert', 'reverse', etc.) and includes recent undoable actions context with instructions for agent. Agent can then call the reverse tool. 10 unit tests for _get_undo_instruction helper."
     },
     {
       "id": "US-018",
