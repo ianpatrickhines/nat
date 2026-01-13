@@ -259,6 +259,43 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*'
 
+  # NationBuilder OAuth Callback Lambda
+  NBOAuthCallbackFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'nat-nb-oauth-callback-${Environment}'
+      Runtime: python3.11
+      Handler: handler.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          # Placeholder - actual code deployed separately
+          def handler(event, context):
+              return {"statusCode": 200, "body": "OK"}
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UsersTable
+          NB_CLIENT_ID_SECRET: !Sub 'nat/nb-client-id-${Environment}'
+          NB_CLIENT_SECRET_SECRET: !Sub 'nat/nb-client-secret-${Environment}'
+          SUCCESS_REDIRECT_URL: !Sub 'https://natassistant.com/connected?env=${Environment}'
+          ERROR_REDIRECT_URL: !Sub 'https://natassistant.com/connection-error?env=${Environment}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
+  # Permission for API Gateway to invoke NB OAuth Callback Lambda
+  NBOAuthCallbackLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref NBOAuthCallbackFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*'
+
   # =============================================================================
   # API Gateway Resources - Stripe Webhook
   # =============================================================================
@@ -323,6 +360,79 @@ Resources:
           ResponseModels:
             application/json: Empty
 
+  # =============================================================================
+  # API Gateway Resources - NationBuilder OAuth Callback
+  # =============================================================================
+
+  # /auth resource
+  AuthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: auth
+
+  # /auth/nationbuilder resource
+  AuthNBResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !Ref AuthResource
+      PathPart: nationbuilder
+
+  # /auth/nationbuilder/callback resource
+  AuthNBCallbackResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !Ref AuthNBResource
+      PathPart: callback
+
+  # GET /auth/nationbuilder/callback method
+  AuthNBCallbackMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref AuthNBCallbackResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${NBOAuthCallbackFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: '302'
+          ResponseParameters:
+            method.response.header.Location: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # OPTIONS /auth/nationbuilder/callback method for CORS
+  AuthNBCallbackOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref AuthNBCallbackResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: Empty
+
   # Gateway Response for CORS on 4XX errors
   GatewayResponseDefault4XX:
     Type: AWS::ApiGateway::GatewayResponse
@@ -351,6 +461,8 @@ Resources:
       - HealthOptionsMethod
       - StripeWebhookMethod
       - StripeWebhookOptionsMethod
+      - AuthNBCallbackMethod
+      - AuthNBCallbackOptionsMethod
     Properties:
       RestApiId: !Ref ApiGateway
       Description: !Sub 'Deployment for ${Environment}'
@@ -441,3 +553,15 @@ Outputs:
     Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/stripe/webhook'
     Export:
       Name: !Sub '${AWS::StackName}-StripeWebhookUrl'
+
+  NBOAuthCallbackFunctionArn:
+    Description: ARN of the NationBuilder OAuth Callback Lambda function
+    Value: !GetAtt NBOAuthCallbackFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-NBOAuthCallbackFunctionArn'
+
+  NBOAuthCallbackUrl:
+    Description: URL of the NationBuilder OAuth callback endpoint
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/auth/nationbuilder/callback'
+    Export:
+      Name: !Sub '${AWS::StackName}-NBOAuthCallbackUrl'
