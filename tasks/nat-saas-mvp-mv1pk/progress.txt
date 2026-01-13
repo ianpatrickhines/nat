@@ -469,3 +469,36 @@ Started: 2025-01-12
 - Button disabled + loading class pattern works well for async operations
 - import.meta.env requires Vite client types in TypeScript config
 
+## 2025-01-12 - US-022: Post-payment success page
+
+**Implementation:**
+- Created `site/success.html` - Post-payment success page with three states:
+  - Loading: Spinner animation while verifying subscription via API
+  - Success: Green checkmark icon with animation, plan info badge, 3-step setup guide
+  - Error: Red error icon with helpful message and action buttons (Back to Home, Contact Support)
+- Created `site/src/success.ts` - JavaScript for subscription verification:
+  - Reads `session_id` from URL query params (from Stripe Checkout redirect)
+  - Calls `/stripe/verify-session` endpoint to validate subscription
+  - Shows success state with plan name for active/trialing subscriptions
+  - Shows error state if verification fails or subscription is not active
+  - Falls back to success with default plan if no session_id (direct visits)
+- Added 200+ lines of CSS to `site/src/styles.css`:
+  - Success icon with pop animation keyframes
+  - Spinner animation for loading state
+  - Step cards with hover effects
+  - Keyboard shortcut badges (kbd styling)
+  - Example queries with quotation marks
+  - Full mobile responsive styles
+- Updated `site/vite.config.ts` for multi-page build:
+  - Added rollupOptions.input with main (index.html) and success (success.html)
+  - Uses path.resolve for absolute paths
+- Browser verified: success state displays correctly, error state displays when API unreachable
+
+**Learnings:**
+- Vite multi-page apps require rollupOptions.input with explicit page entries
+- Stripe redirects include session_id as URL query param - easy to extract with URLSearchParams
+- Three-state UI pattern (loading → success/error) provides good UX for async verification
+- CSS animation keyframes (success-pop, spinner-rotate) add polish without JS complexity
+- Fall-back to success state for direct page visits avoids confusing users who bookmark the page
+- Using path.resolve with __dirname ensures correct absolute paths in Vite config
+
