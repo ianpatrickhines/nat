@@ -154,8 +154,9 @@
         "Typecheck passes"
       ],
       "priority": 9,
-      "passes": false,
-      "notes": "Depends on US-004, US-007. Integrate with subscription middleware."
+      "passes": true,
+      "notes": "Depends on US-004, US-007. Integrate with subscription middleware.",
+      "implementation": "src/lambdas/shared/usage_tracking.py - New module with check_rate_limit() for 5-second cooldown, track_query_usage() for incrementing queries_this_month atomically, check_and_reset_billing_cycle() for usage reset. Rate limit returns 429 with Retry-After header. Both nat_agent and nat_agent_streaming handlers integrate rate checking before processing and usage tracking after success. TENANTS_TABLE env var added to Lambda functions. 20 unit tests in tests/test_usage_tracking.py."
     },
     {
       "id": "US-010",

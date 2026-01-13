@@ -156,3 +156,26 @@ Started: 2025-01-12
 - SSE format: `event: {type}\ndata: {json}\n\n` - double newline terminates event
 - Async generator pattern works well for streaming: `async for event in process_streaming_request(body):`
 - pytest async tests without pytest-asyncio can use run_async() helper with asyncio.get_event_loop().run_until_complete()
+
+## 2025-01-12 - US-009: Usage tracking and rate limiting
+
+**Implementation:**
+- Created `src/lambdas/shared/usage_tracking.py` with core functions:
+  - `check_rate_limit()`: Enforces 5-second cooldown per user, raises RateLimitError with retry_after
+  - `update_last_query_time()`: Updates user's last_query_at timestamp
+  - `increment_query_count()`: Atomic increment of tenant's queries_this_month using DynamoDB conditional update
+  - `check_and_reset_billing_cycle()`: Checks if billing cycle has started and resets usage counter
+  - `track_query_usage()`: Convenience function that updates time and increments count
+- Added RATE_LIMIT_EXCEEDED to SubscriptionErrorCode enum in subscription middleware
+- Integrated into nat_agent handler: rate check before query, usage tracking after success
+- Integrated into nat_agent_streaming handler: rate check before streaming, usage tracking after done event
+- Added TENANTS_TABLE environment variable to NatAgentFunction and NatAgentStreamingFunction in CloudFormation
+- 20 unit tests covering all functions, edge cases, and Decimal handling
+
+**Learnings:**
+- DynamoDB returns Decimal types for numbers - need to convert to int for comparisons
+- Atomic increment uses `SET queries_this_month = if_not_exists(queries_this_month, :zero) + :inc`
+- Rate limiting "fails open" on errors - don't block users due to DynamoDB issues
+- Usage tracking happens AFTER successful query to avoid charging for failed requests
+- For streaming, need to detect success by checking done event without error
+- Retry-After header in 429 response helps clients implement proper backoff
