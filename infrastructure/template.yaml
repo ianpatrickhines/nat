@@ -603,6 +603,67 @@ Resources:
           ResponseModels:
             application/json: Empty
 
+  # =============================================================================
+  # Nat Agent Streaming Lambda (with Lambda URL for SSE streaming)
+  # =============================================================================
+
+  NatAgentStreamingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'nat-agent-streaming-${Environment}'
+      Runtime: python3.11
+      Handler: handler.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          # Placeholder - actual code deployed separately
+          def handler(event, context):
+              return {"statusCode": 200, "body": "OK"}
+      Timeout: 120
+      MemorySize: 512
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UsersTable
+          ANTHROPIC_API_KEY_SECRET: !Sub 'nat/anthropic-api-key-${Environment}'
+          CLAUDE_MODEL: 'claude-haiku-4-5-20251001'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
+  # Lambda Function URL for streaming responses
+  # Function URLs support response streaming which API Gateway does not
+  NatAgentStreamingUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: NONE
+      TargetFunctionArn: !Ref NatAgentStreamingFunction
+      InvokeMode: RESPONSE_STREAM
+      Cors:
+        AllowCredentials: false
+        AllowHeaders:
+          - Content-Type
+          - X-Nat-User-Id
+          - X-Nat-Tenant-Id
+        AllowMethods:
+          - POST
+          - OPTIONS
+        AllowOrigins:
+          - '*'
+        ExposeHeaders:
+          - Content-Type
+        MaxAge: 86400
+
+  # Permission for Function URL to invoke Lambda
+  NatAgentStreamingUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref NatAgentStreamingFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
   # API Deployment
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
@@ -741,3 +802,15 @@ Outputs:
     Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/agent/query'
     Export:
       Name: !Sub '${AWS::StackName}-NatAgentQueryUrl'
+
+  NatAgentStreamingFunctionArn:
+    Description: ARN of the Nat Agent Streaming Lambda function
+    Value: !GetAtt NatAgentStreamingFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-NatAgentStreamingFunctionArn'
+
+  NatAgentStreamingUrl:
+    Description: Function URL for SSE streaming agent queries
+    Value: !GetAtt NatAgentStreamingUrl.FunctionUrl
+    Export:
+      Name: !Sub '${AWS::StackName}-NatAgentStreamingUrl'
