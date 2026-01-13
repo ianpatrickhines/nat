@@ -85,9 +85,55 @@ def get_anthropic_api_key() -> str:
         raise
 
 
+def get_nb_tokens_by_nation(nation_slug: str) -> tuple[str, str] | None:
+    """
+    Retrieve NationBuilder tokens for a nation from Secrets Manager.
+    
+    In the new architecture, tokens are stored per-nation (not per-user),
+    allowing any authenticated user of the nation to use Nat.
+
+    Args:
+        nation_slug: The nation slug
+
+    Returns:
+        Tuple of (access_token, nation_slug) or None if not found
+    """
+    client = get_secrets_manager_client()
+    secret_id = f"nat/nation/{nation_slug}/nb-tokens"
+
+    try:
+        response = client.get_secret_value(SecretId=secret_id)
+        secret_str: str = response.get("SecretString", "")
+        secret_data = json.loads(secret_str)
+
+        access_token = secret_data.get("access_token")
+        stored_slug = secret_data.get("nation_slug")
+
+        if not access_token:
+            logger.error(f"Missing token for nation {nation_slug}")
+            return None
+
+        # Return the nation_slug for consistency
+        return (str(access_token), str(stored_slug or nation_slug))
+
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "")
+        if error_code == "ResourceNotFoundException":
+            logger.warning(f"No NB tokens found for nation {nation_slug}")
+            return None
+        logger.error(f"Failed to retrieve NB tokens: {e}")
+        raise
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse NB tokens JSON: {e}")
+        return None
+
+
 def get_nb_tokens(user_id: str) -> tuple[str, str] | None:
     """
-    Retrieve NationBuilder tokens for a user from Secrets Manager.
+    DEPRECATED: Retrieve NationBuilder tokens for a user from Secrets Manager.
+    
+    This function is kept for backwards compatibility.
+    New code should use get_nb_tokens_by_nation().
 
     Args:
         user_id: The user ID
@@ -407,6 +453,7 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
     """
     query = body.get("query")
     user_id = body.get("user_id")
+    nation_slug = body.get("nation_slug")  # NEW: Nation identifier
     page_context = body.get("context", {})
     confirmed_tools_list: list[str] = body.get("confirmed_tools", [])
     confirmed_tools = set(confirmed_tools_list) if confirmed_tools_list else set()
@@ -426,44 +473,25 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
         })
         return
 
-    logger.info(f"Processing streaming query for user {user_id}: {query[:100]}...")
-
-    # Get user info to verify NB is connected
-    user_info = get_user_info(user_id)
-    if not user_info:
+    if not nation_slug:
         yield format_sse_event(SSE_EVENT_ERROR, {
-            "error": "User not found",
-            "error_code": "USER_NOT_FOUND",
+            "error": "Missing required field: nation_slug",
+            "error_code": "BAD_REQUEST",
         })
         return
 
-    if not user_info.get("nb_connected"):
-        yield format_sse_event(SSE_EVENT_ERROR, {
-            "error": "NationBuilder not connected",
-            "error_code": "NB_NOT_CONNECTED",
-        })
-        return
+    logger.info(f"Processing streaming query for nation {nation_slug}, user {user_id}: {query[:100]}...")
 
-    if user_info.get("nb_needs_reauth"):
-        yield format_sse_event(SSE_EVENT_ERROR, {
-            "error": "NationBuilder connection needs reauthorization",
-            "error_code": "NB_NEEDS_REAUTH",
-        })
-        return
+    # Import nation-based tracking functions
+    from src.lambdas.shared.usage_tracking import (
+        check_and_reset_billing_cycle_nation,
+        track_query_usage_nation,
+    )
 
-    # Get tenant_id for usage tracking
-    tenant_id = user_info.get("tenant_id", "")
-    if not tenant_id:
-        yield format_sse_event(SSE_EVENT_ERROR, {
-            "error": "User has no tenant association",
-            "error_code": "NO_TENANT",
-        })
-        return
+    # Check if billing cycle has reset for this nation
+    check_and_reset_billing_cycle_nation(nation_slug)
 
-    # Check if billing cycle has reset
-    check_and_reset_billing_cycle(tenant_id)
-
-    # Check rate limit (5-second cooldown)
+    # Check rate limit (5-second cooldown per user, anti-abuse)
     try:
         check_rate_limit(user_id)
     except RateLimitError as e:
@@ -474,22 +502,22 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
         })
         return
 
-    # Get NB tokens
-    tokens = get_nb_tokens(user_id)
+    # Get NB tokens for the nation
+    tokens = get_nb_tokens_by_nation(nation_slug)
     if not tokens:
         yield format_sse_event(SSE_EVENT_ERROR, {
-            "error": "NationBuilder tokens not found",
-            "error_code": "NB_TOKENS_MISSING",
+            "error": "NationBuilder not connected for this nation",
+            "error_code": "NB_NOT_CONNECTED",
         })
         return
 
-    nb_token, nb_slug = tokens
+    nb_token, verified_slug = tokens
 
     # Stream the agent response and track whether it succeeded
     stream_succeeded = False
     async for event in stream_agent_response(
         query=query,
-        nb_slug=nb_slug,
+        nb_slug=verified_slug,
         nb_token=nb_token,
         model=CLAUDE_MODEL,
         context=page_context,
@@ -501,10 +529,10 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
         if SSE_EVENT_DONE in event and '"error":' not in event:
             stream_succeeded = True
 
-    # Track usage after successful streaming completion
+    # Track usage after successful streaming completion (nation-based)
     if stream_succeeded:
-        new_query_count = track_query_usage(user_id, tenant_id)
-        logger.info(f"Streaming query successful. Tenant {tenant_id} now at {new_query_count} queries")
+        new_query_count = track_query_usage_nation(user_id, nation_slug)
+        logger.info(f"Streaming query successful. Nation {nation_slug} now at {new_query_count} queries")
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -514,10 +542,11 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     This handler is designed to work with Lambda response streaming.
     It uses the RESPONSE_STREAM invocation mode.
 
-    Expected request body (same as non-streaming):
+    Expected request body:
     {
         "query": "Find person by email john@example.com",
         "user_id": "uuid",
+        "nation_slug": "yournation",
         "context": {
             "page_type": "person",
             "person_name": "John Smith",
