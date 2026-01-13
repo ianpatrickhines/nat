@@ -264,3 +264,23 @@ Started: 2025-01-12
 - Person results from tool calls need to be parsed from JSON strings in STREAMING_TOOL_RESULT events
 - CSS animations (keyframes) work well for typing indicator - bouncing dots pattern
 - textarea rows=1 with CSS max-height creates auto-growing input field effect
+
+## 2025-01-12 - US-014: Auth flow UI screens
+
+**Implementation:**
+- Created `extension/src/components/AuthScreen.tsx` with four authentication states:
+  - NotLoggedInScreen: "Welcome to Nat" with subscribe button linking to Stripe Checkout
+  - NbNotConnectedScreen: "Almost There!" with connect NationBuilder button
+  - NbNeedsReauthScreen: Warning banner + "Reconnect Required" with explanation of token expiry
+  - SubscriptionLapsedScreen: Error banner + contextual message for cancelled vs payment failed
+- Added `useAuthState()` hook that fetches auth state from background worker via GET_AUTH_STATE message and listens for AUTH_STATE_CHANGED updates
+- Added `getAuthScreenType()` helper to determine which screen to show based on auth state
+- Updated Sidebar.tsx to show loading spinner while fetching auth, AuthScreen if not ready, or Chat if authenticated
+- Added 165+ lines of CSS for auth screens with icons, banners, buttons, and hint text
+
+**Learnings:**
+- Auth state flow: check isAuthenticated → subscriptionStatus → nbNeedsReauth → nbConnected (order matters)
+- useEffect cleanup function needed to remove chrome.runtime.onMessage listener to prevent memory leaks
+- SVG icons inline in JSX work well for auth screens - no need for external icon library
+- Different subscription statuses (cancelled vs past_due vs unpaid) require different UX messaging
+- Placeholder URLs (STRIPE_CHECKOUT_URL, NB_CONNECT_URL) configured as constants for build-time replacement

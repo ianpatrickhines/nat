@@ -240,8 +240,9 @@
         "Typecheck passes"
       ],
       "priority": 14,
-      "passes": false,
-      "notes": "Depends on US-013. State from background service worker."
+      "passes": true,
+      "notes": "Depends on US-013. State from background service worker.",
+      "implementation": "extension/src/components/AuthScreen.tsx - New component with four auth state screens: NotLoggedInScreen (subscribe prompt with Stripe link), NbNotConnectedScreen (connect NationBuilder button), NbNeedsReauthScreen (reconnect banner explaining token expiry), SubscriptionLapsedScreen (payment failed/ended with update card link). useAuthState hook fetches auth state from background worker and listens for changes via AUTH_STATE_CHANGED. Sidebar.tsx integrates AuthScreen, showing loading spinner while fetching, auth screen if needed, or Chat if authenticated. CSS styles added for all auth screen variants with icons, banners, and buttons."
     },
     {
       "id": "US-015",
