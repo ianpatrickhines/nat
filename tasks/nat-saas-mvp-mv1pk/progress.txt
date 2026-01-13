@@ -568,3 +568,45 @@ Started: 2025-01-12
 - Using MagicMock(spec=) ensures mock methods match real interface
 - JSON:API responses have consistent structure: data (with type, id, attributes), meta, links
 - AsyncMock() works well for mocking async client methods like list(), get(), create()
+
+## 2025-01-12 - US-025: Integration tests for OAuth and Stripe
+
+**Implementation:**
+- Created `tests/integration/` directory with 56 integration tests
+- Test file organization:
+  - `test_nb_oauth_integration.py` (7 tests): NB OAuth callback flow
+    - Complete flow for new user connection
+    - Reconnecting user flow (reauth)
+    - NB API error handling
+    - Network error handling
+    - Different nations support
+    - Token storage in Secrets Manager
+  - `test_token_refresh_integration.py` (9 tests): Token refresh flow
+    - Single user refresh
+    - Multiple users batch refresh
+    - Failure handling and needs_reauth flag
+    - Missing refresh token handling
+    - NB slug preservation
+  - `test_stripe_webhook_integration.py` (20 tests): Stripe webhook handling
+    - checkout.session.completed event
+    - customer.subscription.updated event
+    - customer.subscription.deleted event
+    - Signature verification (valid, invalid, expired, tampered)
+    - Plan upgrades and billing cycle resets
+  - `test_subscription_verification_integration.py` (20 tests): Subscription verification
+    - User header extraction (case-insensitive)
+    - Subscription status validation (active, trialing, cancelled, etc.)
+    - Query limit enforcement
+    - Middleware decorator pattern
+    - End-to-end flows for different plans
+- All integration tests use mocked AWS services (DynamoDB, Secrets Manager) and HTTP responses
+- Typecheck passes with explicit type annotations
+
+**Learnings:**
+- Integration tests differ from unit tests by testing complete flows with multiple components
+- MockDynamoDBTable pattern with put_item/get_item/update_item/query methods provides realistic behavior
+- MockSecretsManagerClient should simulate both put_secret_value and create_secret (for first-time secrets)
+- Test fixtures can simulate ResourceNotFoundException by using botocore.exceptions.ClientError
+- Signature verification tests need create_stripe_signature helper to generate valid HMAC-SHA256 signatures
+- Different subscription statuses (active, trialing, cancelled, past_due, unpaid) require separate test cases
+- End-to-end test scenarios (new_user_first_query, heavy_user_approaching_limit) help validate real use cases
