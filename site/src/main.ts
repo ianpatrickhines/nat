@@ -64,6 +64,74 @@ const observer = new IntersectionObserver((entries) => {
 
 sections.forEach(section => observer.observe(section));
 
+// Stripe Checkout Integration
+// API endpoint - configure for production
+const CHECKOUT_API_URL = import.meta.env.VITE_CHECKOUT_API_URL || 'https://api.natassistant.com/stripe/checkout';
+
+interface CheckoutResponse {
+  checkout_url: string;
+  session_id: string;
+}
+
+interface CheckoutError {
+  error: string;
+}
+
+async function createCheckoutSession(plan: string): Promise<void> {
+  const button = document.querySelector(`[data-plan="${plan}"]`) as HTMLButtonElement | null;
+
+  if (button) {
+    button.disabled = true;
+    button.classList.add('loading');
+    const originalText = button.textContent;
+    button.textContent = 'Loading...';
+
+    try {
+      const response = await fetch(CHECKOUT_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ plan }),
+      });
+
+      const data: CheckoutResponse | CheckoutError = await response.json();
+
+      if (!response.ok) {
+        throw new Error((data as CheckoutError).error || 'Failed to create checkout session');
+      }
+
+      // Redirect to Stripe Checkout
+      const checkoutData = data as CheckoutResponse;
+      if (checkoutData.checkout_url) {
+        window.location.href = checkoutData.checkout_url;
+      } else {
+        throw new Error('No checkout URL returned');
+      }
+    } catch (error) {
+      console.error('Checkout error:', error);
+      alert('Unable to start checkout. Please try again or contact support.');
+
+      if (button) {
+        button.disabled = false;
+        button.classList.remove('loading');
+        button.textContent = originalText;
+      }
+    }
+  }
+}
+
+// Attach click handlers to subscribe buttons
+document.querySelectorAll('[data-plan]').forEach(button => {
+  button.addEventListener('click', (e) => {
+    e.preventDefault();
+    const plan = (e.currentTarget as HTMLElement).getAttribute('data-plan');
+    if (plan) {
+      createCheckoutSession(plan);
+    }
+  });
+});
+
 // Console greeting for developers
 console.log(
   '%cNat%c - NationBuilder AI Assistant',

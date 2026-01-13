@@ -259,6 +259,44 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*'
 
+  # Stripe Checkout Lambda
+  StripeCheckoutFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'nat-stripe-checkout-${Environment}'
+      Runtime: python3.11
+      Handler: handler.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          # Placeholder - actual code deployed separately
+          def handler(event, context):
+              return {"statusCode": 200, "body": "OK"}
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          STRIPE_SECRET_KEY_NAME: !Sub 'nat/stripe-secret-key-${Environment}'
+          SUCCESS_URL: !Sub 'https://natassistant.com/success?session_id={CHECKOUT_SESSION_ID}'
+          CANCEL_URL: 'https://natassistant.com/pricing'
+          STRIPE_PRICE_STARTER: !Sub 'price_starter_${Environment}'
+          STRIPE_PRICE_TEAM: !Sub 'price_team_${Environment}'
+          STRIPE_PRICE_ORG: !Sub 'price_org_${Environment}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
+  # Permission for API Gateway to invoke Stripe Checkout Lambda
+  StripeCheckoutLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref StripeCheckoutFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*'
+
   # NationBuilder OAuth Callback Lambda
   NBOAuthCallbackFunction:
     Type: AWS::Lambda::Function
@@ -397,6 +435,58 @@ Resources:
           - StatusCode: '200'
             ResponseParameters:
               method.response.header.Access-Control-Allow-Headers: "'Content-Type,Stripe-Signature'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: Empty
+
+  # /stripe/checkout resource
+  StripeCheckoutResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !Ref StripeResource
+      PathPart: checkout
+
+  # POST /stripe/checkout method
+  StripeCheckoutMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref StripeCheckoutResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${StripeCheckoutFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # OPTIONS /stripe/checkout method for CORS
+  StripeCheckoutOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref StripeCheckoutResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type'"
               method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
               method.response.header.Access-Control-Allow-Origin: "'*'"
       MethodResponses:
@@ -674,6 +764,8 @@ Resources:
       - HealthOptionsMethod
       - StripeWebhookMethod
       - StripeWebhookOptionsMethod
+      - StripeCheckoutMethod
+      - StripeCheckoutOptionsMethod
       - AuthNBCallbackMethod
       - AuthNBCallbackOptionsMethod
       - AgentQueryMethod
@@ -768,6 +860,18 @@ Outputs:
     Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/stripe/webhook'
     Export:
       Name: !Sub '${AWS::StackName}-StripeWebhookUrl'
+
+  StripeCheckoutFunctionArn:
+    Description: ARN of the Stripe Checkout Lambda function
+    Value: !GetAtt StripeCheckoutFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-StripeCheckoutFunctionArn'
+
+  StripeCheckoutUrl:
+    Description: URL of the Stripe checkout endpoint
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/stripe/checkout'
+    Export:
+      Name: !Sub '${AWS::StackName}-StripeCheckoutUrl'
 
   NBOAuthCallbackFunctionArn:
     Description: ARN of the NationBuilder OAuth Callback Lambda function

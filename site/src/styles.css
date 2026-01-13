@@ -265,6 +265,42 @@ a:hover {
   width: 100%;
 }
 
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn.loading {
+  position: relative;
+  color: transparent;
+}
+
+.btn.loading::after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: btn-spinner 0.6s linear infinite;
+}
+
+.btn-primary.loading::after,
+.btn-outline.loading:hover::after {
+  border-top-color: white;
+}
+
+.btn-outline.loading::after {
+  border-top-color: var(--color-primary);
+}
+
+@keyframes btn-spinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* --------------------------------------------------------------------------
    Hero Section
    -------------------------------------------------------------------------- */
