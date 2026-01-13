@@ -735,3 +735,132 @@
 .nat-confirmation__btn--info:hover {
   background: #1d4ed8;
 }
+
+/* ============================================================================
+   Error Message Styles
+   ============================================================================ */
+
+.nat-error-message {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  animation: nat-fade-in 0.2s ease;
+}
+
+.nat-error-message--error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+}
+
+.nat-error-message--warning {
+  background: #fffbeb;
+  border: 1px solid #fed7aa;
+}
+
+.nat-error-message--info {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+}
+
+.nat-error-message__icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+}
+
+.nat-error-message--error .nat-error-message__icon {
+  color: #dc2626;
+}
+
+.nat-error-message--warning .nat-error-message__icon {
+  color: #d97706;
+}
+
+.nat-error-message--info .nat-error-message__icon {
+  color: #2563eb;
+}
+
+.nat-error-message__content {
+  flex: 1;
+  min-width: 0;
+}
+
+.nat-error-message__title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.nat-error-message--error .nat-error-message__title {
+  color: #991b1b;
+}
+
+.nat-error-message--warning .nat-error-message__title {
+  color: #92400e;
+}
+
+.nat-error-message--info .nat-error-message__title {
+  color: #1e40af;
+}
+
+.nat-error-message__text {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.nat-error-message--error .nat-error-message__text {
+  color: #b91c1c;
+}
+
+.nat-error-message--warning .nat-error-message__text {
+  color: #a16207;
+}
+
+.nat-error-message--info .nat-error-message__text {
+  color: #1d4ed8;
+}
+
+.nat-error-message__action {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.nat-error-message__action:active {
+  transform: scale(0.98);
+}
+
+.nat-error-message__action--error {
+  background: #dc2626;
+  color: white;
+}
+
+.nat-error-message__action--error:hover {
+  background: #b91c1c;
+}
+
+.nat-error-message__action--warning {
+  background: #d97706;
+  color: white;
+}
+
+.nat-error-message__action--warning:hover {
+  background: #b45309;
+}
+
+.nat-error-message__action--info {
+  background: #2563eb;
+  color: white;
+}
+
+.nat-error-message__action--info:hover {
+  background: #1d4ed8;
+}

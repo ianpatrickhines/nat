@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import { PageContext } from '../utils/pageContext';
 import { ConfirmationDialog, ConfirmationRequest } from './ConfirmationDialog';
+import { ErrorMessage } from './ErrorMessage';
 import {
   recordAction,
   popLastAction,
@@ -28,6 +29,12 @@ interface PersonResult {
   nationbuilder_url?: string;
 }
 
+interface ErrorDetails {
+  errorCode: string;
+  error?: string;
+  retryAfter?: number;
+}
+
 interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -36,6 +43,8 @@ interface Message {
   isStreaming?: boolean;
   toolCalls?: ToolCallInfo[];
   results?: PersonResult[];
+  /** Error details for displaying user-friendly error messages */
+  errorDetails?: ErrorDetails;
 }
 
 interface ChatProps {
@@ -168,14 +177,20 @@ export function Chat({ pageContext }: ChatProps) {
         }
 
         case 'STREAMING_ERROR': {
-          // Mark message as error
+          // Mark message as error with user-friendly error info
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === streamingMessageId
                 ? {
                     ...msg,
                     isStreaming: false,
-                    content: msg.content || `Error: ${message.error}`,
+                    // Keep any partial content, but store error details for display
+                    content: msg.content || '',
+                    errorDetails: {
+                      errorCode: message.errorCode,
+                      error: message.error,
+                      retryAfter: message.retryAfter,
+                    },
                   }
                 : msg
             )
@@ -298,14 +313,34 @@ export function Chat({ pageContext }: ChatProps) {
       });
 
       if (!response.success) {
-        // Update message with error
+        // Update message with error - use error details for user-friendly display
+        // Map common submission errors to error codes
+        let errorCode = 'UNKNOWN_ERROR';
+        const errorMsg = response.error || '';
+
+        if (errorMsg.includes('Not authenticated')) {
+          errorCode = 'UNAUTHORIZED';
+        } else if (errorMsg.includes('NationBuilder not connected')) {
+          errorCode = 'NB_NOT_CONNECTED';
+        } else if (errorMsg.includes('reauthorization')) {
+          errorCode = 'NB_NEEDS_REAUTH';
+        } else if (errorMsg.includes('Subscription is not active')) {
+          errorCode = 'SUBSCRIPTION_INACTIVE';
+        } else if (errorMsg.includes('query is already in progress')) {
+          errorCode = 'RATE_LIMIT_EXCEEDED';
+        }
+
         setMessages((prev) =>
           prev.map((msg) =>
             msg.id === assistantMessageId
               ? {
                   ...msg,
                   isStreaming: false,
-                  content: response.error || 'Failed to send query',
+                  content: '',
+                  errorDetails: {
+                    errorCode,
+                    error: errorMsg,
+                  },
                 }
               : msg
           )
@@ -314,14 +349,18 @@ export function Chat({ pageContext }: ChatProps) {
         setStreamingMessageId(null);
       }
     } catch (error) {
-      // Handle extension context invalidated error
+      // Handle extension context invalidated error or network errors
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === assistantMessageId
             ? {
                 ...msg,
                 isStreaming: false,
-                content: 'Connection error. Please refresh the page.',
+                content: '',
+                errorDetails: {
+                  errorCode: 'CONNECTION_ERROR',
+                  error: error instanceof Error ? error.message : 'Connection error',
+                },
               }
             : msg
         )
@@ -428,48 +467,59 @@ export function Chat({ pageContext }: ChatProps) {
               key={message.id}
               className={`nat-chat__message nat-chat__message--${message.role}`}
             >
-              <div className="nat-chat__message-content">
-                {message.content}
-                {message.isStreaming && (
-                  <span className="nat-chat__typing-indicator">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                  </span>
-                )}
-              </div>
-
-              {/* Person results display */}
-              {message.results && message.results.length > 0 && (
-                <div className="nat-chat__results">
-                  {message.results.slice(0, 10).map((person, idx) => (
-                    <div key={idx} className="nat-chat__result">
-                      <span className="nat-chat__result-name">
-                        {getDisplayName(person)}
+              {/* Error message display */}
+              {message.errorDetails ? (
+                <ErrorMessage
+                  errorCode={message.errorDetails.errorCode}
+                  error={message.errorDetails.error}
+                  retryAfter={message.errorDetails.retryAfter}
+                />
+              ) : (
+                <>
+                  <div className="nat-chat__message-content">
+                    {message.content}
+                    {message.isStreaming && (
+                      <span className="nat-chat__typing-indicator">
+                        <span></span>
+                        <span></span>
+                        <span></span>
                       </span>
-                      {formatLocation(person) && (
-                        <span className="nat-chat__result-location">
-                          {formatLocation(person)}
-                        </span>
+                    )}
+                  </div>
+
+                  {/* Person results display */}
+                  {message.results && message.results.length > 0 && (
+                    <div className="nat-chat__results">
+                      {message.results.slice(0, 10).map((person, idx) => (
+                        <div key={idx} className="nat-chat__result">
+                          <span className="nat-chat__result-name">
+                            {getDisplayName(person)}
+                          </span>
+                          {formatLocation(person) && (
+                            <span className="nat-chat__result-location">
+                              {formatLocation(person)}
+                            </span>
+                          )}
+                          {person.id && (
+                            <a
+                              href={`https://${window.location.hostname}/admin/signups/${person.id}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="nat-chat__result-link"
+                            >
+                              View Profile
+                            </a>
+                          )}
+                        </div>
+                      ))}
+                      {message.results.length > 10 && (
+                        <div className="nat-chat__results-more">
+                          +{message.results.length - 10} more results
+                        </div>
                       )}
-                      {person.id && (
-                        <a
-                          href={`https://${window.location.hostname}/admin/signups/${person.id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="nat-chat__result-link"
-                        >
-                          View Profile
-                        </a>
-                      )}
-                    </div>
-                  ))}
-                  {message.results.length > 10 && (
-                    <div className="nat-chat__results-more">
-                      +{message.results.length - 10} more results
                     </div>
                   )}
-                </div>
+                </>
               )}
             </div>
           ))
