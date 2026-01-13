@@ -1,5 +1,6 @@
 import { useState, useImperativeHandle, forwardRef } from 'preact/compat';
 import { Chat } from './Chat';
+import { AuthScreen, useAuthState, getAuthScreenType } from './AuthScreen';
 
 export interface SidebarHandle {
   toggle: () => void;
@@ -23,6 +24,7 @@ interface SidebarProps {
 export const Sidebar = forwardRef<SidebarHandle, SidebarProps>(
   function Sidebar({ initialOpen = true, onToggle, pageContext }, ref) {
     const [isOpen, setIsOpen] = useState(initialOpen);
+    const { authState, isLoading } = useAuthState();
 
     const toggleSidebar = () => {
       const newState = !isOpen;
@@ -35,6 +37,10 @@ export const Sidebar = forwardRef<SidebarHandle, SidebarProps>(
       toggle: toggleSidebar,
       isOpen: () => isOpen
     }));
+
+    // Determine what content to show based on auth state
+    const screenType = getAuthScreenType(authState);
+    const showChat = screenType === 'ready';
 
     return (
       <div className={`nat-sidebar ${isOpen ? 'nat-sidebar--open' : 'nat-sidebar--collapsed'}`}>
@@ -55,7 +61,16 @@ export const Sidebar = forwardRef<SidebarHandle, SidebarProps>(
             </header>
 
             <main className="nat-sidebar__main">
-              <Chat pageContext={pageContext} />
+              {isLoading ? (
+                <div className="nat-sidebar__loading">
+                  <div className="nat-sidebar__loading-spinner"></div>
+                  <span>Loading...</span>
+                </div>
+              ) : showChat ? (
+                <Chat pageContext={pageContext} />
+              ) : (
+                <AuthScreen authState={authState} />
+              )}
             </main>
           </div>
         ) : (
