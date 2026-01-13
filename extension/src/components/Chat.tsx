@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
+import { PageContext } from '../utils/pageContext';
 
 // ============================================================================
 // Types
@@ -29,16 +30,8 @@ interface Message {
   results?: PersonResult[];
 }
 
-interface PageContext {
-  page_type?: string;
-  person_name?: string;
-  person_id?: string;
-  list_name?: string;
-  event_name?: string;
-}
-
 interface ChatProps {
-  pageContext?: PageContext;
+  pageContext?: PageContext | null;
 }
 
 // Message types from background service worker
@@ -247,12 +240,12 @@ export function Chat({ pageContext }: ChatProps) {
     setIsStreaming(true);
     setStreamingMessageId(assistantMessageId);
 
-    // Send to background service worker
+    // Send to background service worker with page context
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'SUBMIT_QUERY',
         query: query.trim(),
-        context: pageContext,
+        context: pageContext || undefined,
       });
 
       if (!response.success) {

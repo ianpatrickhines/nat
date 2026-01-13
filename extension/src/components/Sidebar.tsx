@@ -1,29 +1,24 @@
 import { useState, useImperativeHandle, forwardRef } from 'preact/compat';
 import { Chat } from './Chat';
 import { AuthScreen, useAuthState, getAuthScreenType } from './AuthScreen';
+import { PageContext, getContextDisplayText } from '../utils/pageContext';
 
 export interface SidebarHandle {
   toggle: () => void;
   isOpen: () => boolean;
-}
-
-interface PageContext {
-  page_type?: string;
-  person_name?: string;
-  person_id?: string;
-  list_name?: string;
-  event_name?: string;
+  setPageContext: (context: PageContext | null) => void;
 }
 
 interface SidebarProps {
   initialOpen?: boolean;
   onToggle?: (isOpen: boolean) => void;
-  pageContext?: PageContext;
+  initialPageContext?: PageContext | null;
 }
 
 export const Sidebar = forwardRef<SidebarHandle, SidebarProps>(
-  function Sidebar({ initialOpen = true, onToggle, pageContext }, ref) {
+  function Sidebar({ initialOpen = true, onToggle, initialPageContext }, ref) {
     const [isOpen, setIsOpen] = useState(initialOpen);
+    const [pageContext, setPageContext] = useState<PageContext | null>(initialPageContext || null);
     const { authState, isLoading } = useAuthState();
 
     const toggleSidebar = () => {
@@ -32,11 +27,15 @@ export const Sidebar = forwardRef<SidebarHandle, SidebarProps>(
       onToggle?.(newState);
     };
 
-    // Expose toggle method to parent via ref
+    // Expose methods to parent via ref
     useImperativeHandle(ref, () => ({
       toggle: toggleSidebar,
-      isOpen: () => isOpen
+      isOpen: () => isOpen,
+      setPageContext: (context: PageContext | null) => setPageContext(context),
     }));
+
+    // Get display text for current context
+    const contextDisplayText = getContextDisplayText(pageContext);
 
     // Determine what content to show based on auth state
     const screenType = getAuthScreenType(authState);
@@ -58,6 +57,12 @@ export const Sidebar = forwardRef<SidebarHandle, SidebarProps>(
             <header className="nat-sidebar__header">
               <h1 className="nat-sidebar__title">Nat</h1>
               <span className="nat-sidebar__subtitle">NationBuilder Assistant</span>
+              {contextDisplayText && (
+                <div className="nat-sidebar__context">
+                  <span className="nat-sidebar__context-label">Viewing:</span>
+                  <span className="nat-sidebar__context-value">{contextDisplayText}</span>
+                </div>
+              )}
             </header>
 
             <main className="nat-sidebar__main">

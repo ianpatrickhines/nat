@@ -78,6 +78,31 @@
   color: #6b7280;
 }
 
+/* Page context display */
+.nat-sidebar__context {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #eef2ff;
+  border-radius: 6px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nat-sidebar__context-label {
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.nat-sidebar__context-value {
+  color: #4f46e5;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .nat-sidebar__main {
   flex: 1;
   padding: 16px;

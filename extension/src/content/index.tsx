@@ -1,9 +1,13 @@
 import { render } from 'preact';
 import { Sidebar, SidebarHandle } from '../components/Sidebar';
 import { createRef } from 'preact';
+import { detectPageContext, watchForPageChanges, PageContext } from '../utils/pageContext';
 
-// Reference to sidebar for keyboard toggle
+// Reference to sidebar for keyboard toggle and context updates
 let sidebarRef: { current: SidebarHandle | null } = { current: null };
+
+// Store current page context
+let currentPageContext: PageContext | null = null;
 
 function updateBodyMargin(isOpen: boolean) {
   // Adjust body margin to prevent sidebar from overlapping NB content
@@ -47,14 +51,32 @@ function init() {
   // Create ref for sidebar
   sidebarRef = createRef<SidebarHandle>();
 
+  // Detect initial page context
+  currentPageContext = detectPageContext();
+
   // Set initial body margin
   updateBodyMargin(true);
 
   // Set up keyboard shortcut
   setupKeyboardShortcut();
 
-  // Render the Preact app
-  render(<Sidebar ref={sidebarRef} onToggle={updateBodyMargin} />, container);
+  // Set up page context watching for SPA navigation
+  watchForPageChanges((context) => {
+    currentPageContext = context;
+    if (sidebarRef.current) {
+      sidebarRef.current.setPageContext(context);
+    }
+  });
+
+  // Render the Preact app with initial context
+  render(
+    <Sidebar
+      ref={sidebarRef}
+      onToggle={updateBodyMargin}
+      initialPageContext={currentPageContext}
+    />,
+    container
+  );
 }
 
 // Initialize when DOM is ready
