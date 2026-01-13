@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Welcome to Nat - Subscription Confirmed</title>
+  <meta name="description" content="Your Nat subscription is active. Install the Chrome extension to get started.">
+  <link rel="stylesheet" href="/src/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Navigation -->
+  <nav class="nav">
+    <div class="nav-container">
+      <a href="/" class="nav-logo">
+        <span class="logo-icon">N</span>
+        <span class="logo-text">Nat</span>
+      </a>
+    </div>
+  </nav>
+
+  <!-- Success Content -->
+  <main class="success-page">
+    <div class="container">
+      <!-- Loading State -->
+      <div id="loading-state" class="success-state">
+        <div class="success-spinner"></div>
+        <h1>Confirming your subscription...</h1>
+        <p>Just a moment while we verify your payment.</p>
+      </div>
+
+      <!-- Success State -->
+      <div id="success-state" class="success-state" style="display: none;">
+        <div class="success-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+          </svg>
+        </div>
+        <h1>Welcome to Nat!</h1>
+        <p class="success-subtitle">Your subscription is now active. Let's get you set up.</p>
+
+        <!-- Plan Info -->
+        <div class="plan-info">
+          <span class="plan-label">Your plan:</span>
+          <span id="plan-name" class="plan-value">Loading...</span>
+        </div>
+
+        <!-- Next Steps -->
+        <div class="next-steps">
+          <h2>Get Started in 3 Easy Steps</h2>
+
+          <div class="step-card">
+            <div class="step-badge">1</div>
+            <div class="step-content">
+              <h3>Install the Chrome Extension</h3>
+              <p>Add Nat to Chrome to access it on any NationBuilder page.</p>
+              <a href="#" id="chrome-store-link" class="btn btn-primary btn-lg" target="_blank" rel="noopener">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 8px;">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <circle cx="12" cy="12" r="4"></circle>
+                  <line x1="21.17" y1="8" x2="12" y2="8"></line>
+                  <line x1="3.95" y1="6.06" x2="8.54" y2="14"></line>
+                  <line x1="10.88" y1="21.94" x2="15.46" y2="14"></line>
+                </svg>
+                Install Chrome Extension
+              </a>
+            </div>
+          </div>
+
+          <div class="step-card">
+            <div class="step-badge">2</div>
+            <div class="step-content">
+              <h3>Connect Your NationBuilder Account</h3>
+              <p>After installing, click the Nat icon and authorize access to your nation. This uses NationBuilder's official OAuth - your credentials stay secure.</p>
+            </div>
+          </div>
+
+          <div class="step-card">
+            <div class="step-badge">3</div>
+            <div class="step-content">
+              <h3>Start Asking Questions</h3>
+              <p>Visit any NationBuilder page and press <kbd>Cmd+K</kbd> (Mac) or <kbd>Ctrl+K</kbd> (Windows) to open Nat. Ask questions in plain English like:</p>
+              <ul class="example-queries">
+                <li>"Find all donors from Austin who gave over $100"</li>
+                <li>"Show me volunteers who signed up this month"</li>
+                <li>"Add the tag 'VIP' to everyone on my Top Donors list"</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- Help Section -->
+        <div class="help-section">
+          <h3>Need Help?</h3>
+          <p>Check out our <a href="#faq">FAQ</a> or contact us at <a href="mailto:support@asknat.ai">support@asknat.ai</a></p>
+        </div>
+      </div>
+
+      <!-- Error State -->
+      <div id="error-state" class="success-state" style="display: none;">
+        <div class="error-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="8" x2="12" y2="12"></line>
+            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+          </svg>
+        </div>
+        <h1>Something went wrong</h1>
+        <p id="error-message">We couldn't verify your subscription. Please contact support if this persists.</p>
+        <div class="error-actions">
+          <a href="/" class="btn btn-secondary">Back to Home</a>
+          <a href="mailto:support@asknat.ai" class="btn btn-primary">Contact Support</a>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer success-footer">
+    <div class="container">
+      <div class="footer-bottom" style="border-top: none; padding-top: 0;">
+        <p>Built by <a href="https://hinesdigital.com">Hines Digital</a></p>
+      </div>
+    </div>
+  </footer>
+
+  <script type="module" src="/src/success.ts"></script>
+</body>
+</html>

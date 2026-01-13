@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Nat - NationBuilder Assistant",
+  "version": "1.0.0",
+  "description": "AI assistant for NationBuilder - natural language access to your nation's data",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "alarms"
+  ],
+  "host_permissions": [
+    "*://*.nationbuilder.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.nationbuilder.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"]
+    }
+  ],
+  "action": {
+    "default_title": "Nat - NationBuilder Assistant"
+  }
+}

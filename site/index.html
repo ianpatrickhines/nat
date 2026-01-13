@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nat - Your NationBuilder AI Assistant</title>
+  <meta name="description" content="Nat is a conversational AI assistant that provides natural language access to NationBuilder. Accomplish tasks in seconds through conversation.">
+  <link rel="stylesheet" href="/src/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Navigation -->
+  <nav class="nav">
+    <div class="nav-container">
+      <a href="/" class="nav-logo">
+        <span class="logo-icon">N</span>
+        <span class="logo-text">Nat</span>
+      </a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#faq">FAQ</a>
+        <a href="#pricing" class="nav-cta">Get Started</a>
+      </div>
+      <button class="mobile-menu-btn" aria-label="Menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Mobile menu -->
+  <div class="mobile-menu">
+    <a href="#features">Features</a>
+    <a href="#pricing">Pricing</a>
+    <a href="#faq">FAQ</a>
+    <a href="#pricing" class="nav-cta">Get Started</a>
+  </div>
+
+  <!-- Hero Section -->
+  <section class="hero">
+    <div class="container">
+      <h1 class="hero-title">
+        Your NationBuilder<br>
+        <span class="gradient-text">AI Assistant</span>
+      </h1>
+      <p class="hero-subtitle">
+        Accomplish NationBuilder tasks in seconds through natural conversation.<br>
+        No more clicking through endless menus and filters.
+      </p>
+      <div class="hero-cta">
+        <a href="#pricing" class="btn btn-primary btn-lg">Start Using Nat</a>
+        <a href="#features" class="btn btn-secondary btn-lg">See How It Works</a>
+      </div>
+      <div class="hero-image">
+        <div class="browser-mockup">
+          <div class="browser-header">
+            <div class="browser-dots">
+              <span></span><span></span><span></span>
+            </div>
+            <div class="browser-address">myorg.nationbuilder.com</div>
+          </div>
+          <div class="browser-content">
+            <div class="nb-mockup">
+              <div class="nb-sidebar"></div>
+              <div class="nb-main"></div>
+            </div>
+            <div class="nat-sidebar">
+              <div class="nat-header">
+                <span class="nat-icon">N</span>
+                <span>Nat</span>
+              </div>
+              <div class="nat-chat">
+                <div class="chat-message user">Find all donors from Austin who gave over $100 this year</div>
+                <div class="chat-message assistant">
+                  <div class="typing-indicator">
+                    <span></span><span></span><span></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section id="features" class="features">
+    <div class="container">
+      <h2 class="section-title">NationBuilder, Simplified</h2>
+      <p class="section-subtitle">
+        Tasks that used to require navigating multiple screens can now be accomplished with a simple question.
+      </p>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>
+          </div>
+          <h3>Natural Conversation</h3>
+          <p>Ask questions in plain English. No need to learn NationBuilder's complex interface or data model.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+          </div>
+          <h3>Full People Access</h3>
+          <p>Search, filter, and manage your supporters. Find donors, volunteers, and members instantly.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+          </div>
+          <h3>Smart Lists & Tags</h3>
+          <p>Create and manage lists, add tags in bulk, and segment your database without complex filters.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
+          </div>
+          <h3>Donation Tracking</h3>
+          <p>Find donations by amount, date, or donor. Get quick summaries of your fundraising progress.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+          </div>
+          <h3>Event Management</h3>
+          <p>Check RSVPs, manage attendees, and get event summaries without digging through menus.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+          </div>
+          <h3>Safe & Secure</h3>
+          <p>Confirmation prompts for destructive actions. Session undo to reverse mistakes. Your data stays safe.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How It Works -->
+  <section class="how-it-works">
+    <div class="container">
+      <h2 class="section-title">How Nat Works</h2>
+      <div class="steps">
+        <div class="step">
+          <div class="step-number">1</div>
+          <h3>Subscribe & Install</h3>
+          <p>Choose a plan, complete checkout, and install the Chrome extension.</p>
+        </div>
+        <div class="step">
+          <div class="step-number">2</div>
+          <h3>Connect NationBuilder</h3>
+          <p>Authorize Nat to access your nation with one-click OAuth.</p>
+        </div>
+        <div class="step">
+          <div class="step-number">3</div>
+          <h3>Start Asking</h3>
+          <p>Open Nat on any NationBuilder page and ask questions in plain English.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pricing Section -->
+  <section id="pricing" class="pricing">
+    <div class="container">
+      <h2 class="section-title">Simple, Transparent Pricing</h2>
+      <p class="section-subtitle">Choose the plan that fits your organization</p>
+      <div class="pricing-grid">
+        <!-- Starter Plan -->
+        <div class="pricing-card">
+          <div class="pricing-header">
+            <h3 class="plan-name">Starter</h3>
+            <div class="plan-price">
+              <span class="currency">$</span>
+              <span class="amount">49</span>
+              <span class="period">/month</span>
+            </div>
+            <p class="plan-description">Perfect for individuals and small organizations</p>
+          </div>
+          <ul class="plan-features">
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span><strong>1</strong> user seat</span>
+            </li>
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span><strong>500</strong> queries/month</span>
+            </li>
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span>All 66 NationBuilder tools</span>
+            </li>
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span>Context-aware assistance</span>
+            </li>
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span>Email support</span>
+            </li>
+          </ul>
+          <button type="button" class="btn btn-outline btn-block" data-plan="starter">Subscribe</button>
+        </div>
+
+        <!-- Team Plan -->
+        <div class="pricing-card featured">
+          <div class="featured-badge">Most Popular</div>
+          <div class="pricing-header">
+            <h3 class="plan-name">Team</h3>
+            <div class="plan-price">
+              <span class="currency">$</span>
+              <span class="amount">149</span>
+              <span class="period">/month</span>
+            </div>
+            <p class="plan-description">For growing campaigns and teams</p>
+          </div>
+          <ul class="plan-features">
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span><strong>5</strong> user seats</span>
+            </li>
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span><strong>2,000</strong> queries/month</span>
+            </li>
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span>All 66 NationBuilder tools</span>
+            </li>
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span>Context-aware assistance</span>
+            </li>
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span>Priority email support</span>
+            </li>
+          </ul>
+          <button type="button" class="btn btn-primary btn-block" data-plan="team">Subscribe</button>
+        </div>
+
+        <!-- Organization Plan -->
+        <div class="pricing-card">
+          <div class="pricing-header">
+            <h3 class="plan-name">Organization</h3>
+            <div class="plan-price">
+              <span class="currency">$</span>
+              <span class="amount">399</span>
+              <span class="period">/month</span>
+            </div>
+            <p class="plan-description">For large organizations and parties</p>
+          </div>
+          <ul class="plan-features">
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span><strong>15</strong> user seats</span>
+            </li>
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span><strong>5,000</strong> queries/month</span>
+            </li>
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span>All 66 NationBuilder tools</span>
+            </li>
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span>Context-aware assistance</span>
+            </li>
+            <li>
+              <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              <span>Priority email support</span>
+            </li>
+          </ul>
+          <button type="button" class="btn btn-outline btn-block" data-plan="organization">Subscribe</button>
+        </div>
+      </div>
+
+      <!-- Feature Comparison Table -->
+      <div class="comparison-table">
+        <h3 class="comparison-title">Compare Plans</h3>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Feature</th>
+                <th>Starter</th>
+                <th>Team</th>
+                <th>Organization</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>User seats</td>
+                <td>1</td>
+                <td>5</td>
+                <td>15</td>
+              </tr>
+              <tr>
+                <td>Monthly queries</td>
+                <td>500</td>
+                <td>2,000</td>
+                <td>5,000</td>
+              </tr>
+              <tr>
+                <td>NationBuilder API tools</td>
+                <td>66</td>
+                <td>66</td>
+                <td>66</td>
+              </tr>
+              <tr>
+                <td>Context-aware page detection</td>
+                <td><span class="check">Yes</span></td>
+                <td><span class="check">Yes</span></td>
+                <td><span class="check">Yes</span></td>
+              </tr>
+              <tr>
+                <td>Confirmation dialogs</td>
+                <td><span class="check">Yes</span></td>
+                <td><span class="check">Yes</span></td>
+                <td><span class="check">Yes</span></td>
+              </tr>
+              <tr>
+                <td>Session undo</td>
+                <td><span class="check">Yes</span></td>
+                <td><span class="check">Yes</span></td>
+                <td><span class="check">Yes</span></td>
+              </tr>
+              <tr>
+                <td>Email support</td>
+                <td>Standard</td>
+                <td>Priority</td>
+                <td>Priority</td>
+              </tr>
+              <tr>
+                <td>Price per query</td>
+                <td>$0.098</td>
+                <td>$0.075</td>
+                <td>$0.080</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ Section -->
+  <section id="faq" class="faq">
+    <div class="container">
+      <h2 class="section-title">Frequently Asked Questions</h2>
+      <div class="faq-grid">
+        <div class="faq-item">
+          <h3>How does Nat connect to my NationBuilder?</h3>
+          <p>Nat uses NationBuilder's official OAuth system. You'll authorize Nat to access your nation, and all actions are performed as your NationBuilder user - not a separate "Nat" account.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Is my data secure?</h3>
+          <p>Absolutely. Your NationBuilder credentials are encrypted and stored securely. Nat never stores your supporter data - it only accesses it when you ask a question, through NationBuilder's API.</p>
+        </div>
+        <div class="faq-item">
+          <h3>What counts as a query?</h3>
+          <p>Each message you send to Nat counts as one query. If Nat needs to use multiple tools to answer your question, that still counts as just one query.</p>
+        </div>
+        <div class="faq-item">
+          <h3>What happens if I hit my query limit?</h3>
+          <p>You'll see a message letting you know you've reached your limit. You can upgrade your plan at any time to continue using Nat, or wait until your next billing cycle.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Can Nat delete or modify data?</h3>
+          <p>Yes, but Nat always asks for confirmation before performing destructive actions like deleting records or making bulk changes. You stay in control.</p>
+        </div>
+        <div class="faq-item">
+          <h3>What browsers are supported?</h3>
+          <p>Nat is currently available as a Chrome extension. Support for Firefox, Safari, and Edge is planned for future releases.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA Section -->
+  <section class="cta">
+    <div class="container">
+      <h2>Ready to simplify NationBuilder?</h2>
+      <p>Join organizations already using Nat to save hours every week.</p>
+      <a href="#pricing" class="btn btn-primary btn-lg">Get Started Today</a>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-content">
+        <div class="footer-brand">
+          <a href="/" class="nav-logo">
+            <span class="logo-icon">N</span>
+            <span class="logo-text">Nat</span>
+          </a>
+          <p>Your NationBuilder AI Assistant</p>
+        </div>
+        <div class="footer-links">
+          <div class="footer-column">
+            <h4>Product</h4>
+            <a href="#features">Features</a>
+            <a href="#pricing">Pricing</a>
+            <a href="#faq">FAQ</a>
+          </div>
+          <div class="footer-column">
+            <h4>Legal</h4>
+            <a href="/terms">Terms of Service</a>
+            <a href="/privacy">Privacy Policy</a>
+          </div>
+          <div class="footer-column">
+            <h4>Support</h4>
+            <a href="mailto:support@asknat.ai">Contact Us</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>Built by <a href="https://hinesdigital.com">Hines Digital</a></p>
+      </div>
+    </div>
+  </footer>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

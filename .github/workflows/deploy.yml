@@ -1,0 +1,348 @@
+# Deploy workflow - deploys to staging on main merge, production requires approval
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - prod
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  # =============================================================================
+  # Build artifacts (shared by all deployments)
+  # =============================================================================
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    outputs:
+      extension-artifact: chrome-extension-${{ github.sha }}
+      site-artifact: landing-site-${{ github.sha }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Build extension
+      - name: Install extension dependencies
+        working-directory: extension
+        run: npm ci
+
+      - name: Build extension
+        working-directory: extension
+        run: npm run build
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-extension-${{ github.sha }}
+          path: extension/dist/
+          retention-days: 90
+
+      # Build site
+      - name: Install site dependencies
+        working-directory: site
+        run: npm ci
+
+      - name: Build site
+        working-directory: site
+        run: npm run build
+
+      - name: Upload site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: landing-site-${{ github.sha }}
+          path: site/dist/
+          retention-days: 90
+
+  # =============================================================================
+  # Deploy to Staging (automatic on main merge)
+  # =============================================================================
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install boto3
+
+      - name: Package Lambda functions
+        run: |
+          # Create deployment package for each Lambda
+          mkdir -p .lambda-packages
+
+          # Package stripe_webhook
+          cd src/lambdas/stripe_webhook
+          zip -r ../../../.lambda-packages/stripe_webhook.zip .
+          cd ../../..
+
+          # Package stripe_checkout
+          cd src/lambdas/stripe_checkout
+          zip -r ../../../.lambda-packages/stripe_checkout.zip .
+          cd ../../..
+
+          # Package nb_oauth_callback
+          cd src/lambdas/nb_oauth_callback
+          zip -r ../../../.lambda-packages/nb_oauth_callback.zip .
+          cd ../../..
+
+          # Package token_refresh
+          cd src/lambdas/token_refresh
+          zip -r ../../../.lambda-packages/token_refresh.zip .
+          cd ../../..
+
+          # Package nat_agent (includes shared modules and nat source)
+          mkdir -p .lambda-packages/nat_agent_staging
+          cp -r src/lambdas/nat_agent/* .lambda-packages/nat_agent_staging/
+          cp -r src/lambdas/shared .lambda-packages/nat_agent_staging/
+          cp -r src/nat .lambda-packages/nat_agent_staging/
+          cd .lambda-packages/nat_agent_staging
+          zip -r ../nat_agent.zip .
+          cd ../..
+
+          # Package nat_agent_streaming (includes shared modules and nat source)
+          mkdir -p .lambda-packages/nat_agent_streaming_staging
+          cp -r src/lambdas/nat_agent_streaming/* .lambda-packages/nat_agent_streaming_staging/
+          cp -r src/lambdas/shared .lambda-packages/nat_agent_streaming_staging/
+          cp -r src/nat .lambda-packages/nat_agent_streaming_staging/
+          cd .lambda-packages/nat_agent_streaming_staging
+          zip -r ../nat_agent_streaming.zip .
+          cd ../..
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/template.yaml \
+            --stack-name nat-saas-staging \
+            --parameter-overrides Environment=staging \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Upload Lambda code to S3 and update functions
+        run: |
+          # Create S3 bucket for Lambda code if it doesn't exist
+          aws s3 mb s3://nat-lambda-code-staging --region $AWS_REGION 2>/dev/null || true
+
+          # Upload Lambda packages
+          aws s3 cp .lambda-packages/stripe_webhook.zip s3://nat-lambda-code-staging/stripe_webhook.zip
+          aws s3 cp .lambda-packages/stripe_checkout.zip s3://nat-lambda-code-staging/stripe_checkout.zip
+          aws s3 cp .lambda-packages/nb_oauth_callback.zip s3://nat-lambda-code-staging/nb_oauth_callback.zip
+          aws s3 cp .lambda-packages/token_refresh.zip s3://nat-lambda-code-staging/token_refresh.zip
+          aws s3 cp .lambda-packages/nat_agent.zip s3://nat-lambda-code-staging/nat_agent.zip
+          aws s3 cp .lambda-packages/nat_agent_streaming.zip s3://nat-lambda-code-staging/nat_agent_streaming.zip
+
+          # Update Lambda functions with new code
+          aws lambda update-function-code --function-name nat-stripe-webhook-staging --s3-bucket nat-lambda-code-staging --s3-key stripe_webhook.zip || true
+          aws lambda update-function-code --function-name nat-stripe-checkout-staging --s3-bucket nat-lambda-code-staging --s3-key stripe_checkout.zip || true
+          aws lambda update-function-code --function-name nat-nb-oauth-callback-staging --s3-bucket nat-lambda-code-staging --s3-key nb_oauth_callback.zip || true
+          aws lambda update-function-code --function-name nat-token-refresh-staging --s3-bucket nat-lambda-code-staging --s3-key token_refresh.zip || true
+          aws lambda update-function-code --function-name nat-agent-staging --s3-bucket nat-lambda-code-staging --s3-key nat_agent.zip || true
+          aws lambda update-function-code --function-name nat-agent-streaming-staging --s3-bucket nat-lambda-code-staging --s3-key nat_agent_streaming.zip || true
+
+      - name: Output staging URLs
+        run: |
+          echo "Staging deployment complete!"
+          STACK_OUTPUT=$(aws cloudformation describe-stacks --stack-name nat-saas-staging --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null || echo "Stack not ready")
+          echo "API URL: $STACK_OUTPUT"
+
+  # =============================================================================
+  # Deploy to Production (requires manual approval)
+  # =============================================================================
+  deploy-prod:
+    name: Deploy to Production
+    needs: [build, deploy-staging]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://api.natassistant.com
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'prod'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install boto3
+
+      - name: Package Lambda functions
+        run: |
+          # Create deployment package for each Lambda
+          mkdir -p .lambda-packages
+
+          # Package stripe_webhook
+          cd src/lambdas/stripe_webhook
+          zip -r ../../../.lambda-packages/stripe_webhook.zip .
+          cd ../../..
+
+          # Package stripe_checkout
+          cd src/lambdas/stripe_checkout
+          zip -r ../../../.lambda-packages/stripe_checkout.zip .
+          cd ../../..
+
+          # Package nb_oauth_callback
+          cd src/lambdas/nb_oauth_callback
+          zip -r ../../../.lambda-packages/nb_oauth_callback.zip .
+          cd ../../..
+
+          # Package token_refresh
+          cd src/lambdas/token_refresh
+          zip -r ../../../.lambda-packages/token_refresh.zip .
+          cd ../../..
+
+          # Package nat_agent (includes shared modules and nat source)
+          mkdir -p .lambda-packages/nat_agent_staging
+          cp -r src/lambdas/nat_agent/* .lambda-packages/nat_agent_staging/
+          cp -r src/lambdas/shared .lambda-packages/nat_agent_staging/
+          cp -r src/nat .lambda-packages/nat_agent_staging/
+          cd .lambda-packages/nat_agent_staging
+          zip -r ../nat_agent.zip .
+          cd ../..
+
+          # Package nat_agent_streaming (includes shared modules and nat source)
+          mkdir -p .lambda-packages/nat_agent_streaming_staging
+          cp -r src/lambdas/nat_agent_streaming/* .lambda-packages/nat_agent_streaming_staging/
+          cp -r src/lambdas/shared .lambda-packages/nat_agent_streaming_staging/
+          cp -r src/nat .lambda-packages/nat_agent_streaming_staging/
+          cd .lambda-packages/nat_agent_streaming_staging
+          zip -r ../nat_agent_streaming.zip .
+          cd ../..
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/template.yaml \
+            --stack-name nat-saas-prod \
+            --parameter-overrides Environment=prod \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Upload Lambda code to S3 and update functions
+        run: |
+          # Create S3 bucket for Lambda code if it doesn't exist
+          aws s3 mb s3://nat-lambda-code-prod --region $AWS_REGION 2>/dev/null || true
+
+          # Upload Lambda packages
+          aws s3 cp .lambda-packages/stripe_webhook.zip s3://nat-lambda-code-prod/stripe_webhook.zip
+          aws s3 cp .lambda-packages/stripe_checkout.zip s3://nat-lambda-code-prod/stripe_checkout.zip
+          aws s3 cp .lambda-packages/nb_oauth_callback.zip s3://nat-lambda-code-prod/nb_oauth_callback.zip
+          aws s3 cp .lambda-packages/token_refresh.zip s3://nat-lambda-code-prod/token_refresh.zip
+          aws s3 cp .lambda-packages/nat_agent.zip s3://nat-lambda-code-prod/nat_agent.zip
+          aws s3 cp .lambda-packages/nat_agent_streaming.zip s3://nat-lambda-code-prod/nat_agent_streaming.zip
+
+          # Update Lambda functions with new code
+          aws lambda update-function-code --function-name nat-stripe-webhook-prod --s3-bucket nat-lambda-code-prod --s3-key stripe_webhook.zip
+          aws lambda update-function-code --function-name nat-stripe-checkout-prod --s3-bucket nat-lambda-code-prod --s3-key stripe_checkout.zip
+          aws lambda update-function-code --function-name nat-nb-oauth-callback-prod --s3-bucket nat-lambda-code-prod --s3-key nb_oauth_callback.zip
+          aws lambda update-function-code --function-name nat-token-refresh-prod --s3-bucket nat-lambda-code-prod --s3-key token_refresh.zip
+          aws lambda update-function-code --function-name nat-agent-prod --s3-bucket nat-lambda-code-prod --s3-key nat_agent.zip
+          aws lambda update-function-code --function-name nat-agent-streaming-prod --s3-bucket nat-lambda-code-prod --s3-key nat_agent_streaming.zip
+
+      - name: Output production URLs
+        run: |
+          echo "Production deployment complete!"
+          STACK_OUTPUT=$(aws cloudformation describe-stacks --stack-name nat-saas-prod --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null || echo "Stack not ready")
+          echo "API URL: $STACK_OUTPUT"
+
+  # =============================================================================
+  # Create Release with Extension Artifact
+  # =============================================================================
+  create-release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download extension artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: chrome-extension-${{ github.sha }}
+          path: extension-dist
+
+      - name: Create extension zip for release
+        run: |
+          cd extension-dist
+          zip -r ../nat-chrome-extension.zip .
+          cd ..
+
+      - name: Get short SHA
+        id: sha
+        run: echo "short=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: build-${{ steps.sha.outputs.short }}
+          name: Build ${{ steps.sha.outputs.short }}
+          body: |
+            Automated build from commit ${{ github.sha }}
+
+            ## Artifacts
+            - Chrome Extension (attached)
+            - Landing Site (available in workflow artifacts)
+
+            ## Deployment
+            - Staging: Automatically deployed
+            - Production: Use workflow dispatch to deploy
+          draft: false
+          prerelease: true
+          files: |
+            nat-chrome-extension.zip

@@ -1,0 +1,474 @@
+{
+  "project": "Nat SaaS MVP",
+  "branchName": "ralph/nat-saas-mvp",
+  "description": "Multi-tenant SaaS NationBuilder assistant with Chrome extension, Stripe billing, and NB OAuth",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "CloudFormation base infrastructure",
+      "description": "As a developer, I want CloudFormation templates for DynamoDB tables (Tenants, Users) and IAM roles so that the backend has persistent storage.",
+      "acceptanceCriteria": [
+        "CloudFormation template creates Tenants table with tenant_id PK",
+        "CloudFormation template creates Users table with user_id PK and tenant_id GSI",
+        "IAM roles for Lambda execution with DynamoDB and Secrets Manager access",
+        "Template deploys successfully to dev environment",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Foundation for all other stories. Tables schema per SPEC.md Data Model section.",
+      "implementation": "infrastructure/template.yaml - CloudFormation with Tenants/Users tables, Lambda IAM role. Validated with cfn-lint."
+    },
+    {
+      "id": "US-002",
+      "title": "API Gateway REST API setup",
+      "description": "As a developer, I want an API Gateway REST API with CORS configured so that the Chrome extension can communicate with the backend.",
+      "acceptanceCriteria": [
+        "API Gateway REST API created in CloudFormation",
+        "CORS enabled for *.nationbuilder.com origins",
+        "Custom domain support (placeholder for future)",
+        "Returns 200 OK on health check endpoint",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Depends on US-001. Add to existing CloudFormation template.",
+      "implementation": "Added API Gateway REST API to infrastructure/template.yaml with /health endpoint (MOCK 200 OK), CORS headers on all responses including 4XX/5XX, OPTIONS preflight methods, and custom domain parameter placeholder. Validated with cfn-lint."
+    },
+    {
+      "id": "US-003",
+      "title": "Stripe webhook Lambda",
+      "description": "As a developer, I want a Lambda function that handles Stripe webhook events so that subscription status is tracked in DynamoDB.",
+      "acceptanceCriteria": [
+        "Lambda handles checkout.session.completed event",
+        "Lambda handles customer.subscription.updated event",
+        "Lambda handles customer.subscription.deleted event",
+        "Tenant record created/updated in DynamoDB with subscription status",
+        "Webhook signature verification implemented",
+        "Unit tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "Depends on US-001, US-002. Store Stripe webhook secret in Secrets Manager.",
+      "implementation": "src/lambdas/stripe_webhook/handler.py - Full webhook handler with HMAC-SHA256 signature verification, handles checkout.session.completed (creates tenant+user), customer.subscription.updated (updates status/plan/resets usage), customer.subscription.deleted (marks cancelled). CloudFormation adds Lambda + API Gateway POST /stripe/webhook. 22 unit tests in tests/test_stripe_webhook.py."
+    },
+    {
+      "id": "US-004",
+      "title": "Subscription verification middleware",
+      "description": "As a developer, I want middleware that verifies subscription status so that only paying customers can use the API.",
+      "acceptanceCriteria": [
+        "Middleware extracts user identity from request headers",
+        "Middleware checks tenant subscription status in DynamoDB",
+        "Returns 402 Payment Required if subscription inactive",
+        "Returns 403 if query limit exceeded",
+        "Unit tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Depends on US-003. Shared utility used by agent Lambda.",
+      "implementation": "src/lambdas/shared/subscription_middleware.py - Extracts X-Nat-User-Id/X-Nat-Tenant-Id headers, looks up user→tenant→subscription in DynamoDB, returns 402 for inactive (cancelled/past_due/unpaid), 403 for exceeded query limit. Supports decorator pattern for Lambda handlers. 26 unit tests in tests/test_subscription_middleware.py."
+    },
+    {
+      "id": "US-005",
+      "title": "NationBuilder OAuth callback Lambda",
+      "description": "As a user, I want to connect my NationBuilder account so that Nat can access my nation's data.",
+      "acceptanceCriteria": [
+        "Lambda receives OAuth callback with authorization code",
+        "Lambda exchanges code for access_token and refresh_token",
+        "Tokens stored in Secrets Manager (nat/user/{user_id}/nb-tokens)",
+        "User record updated with nb_connected=true and nb_token_expires_at",
+        "Returns redirect to success page",
+        "Unit tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Depends on US-001, US-002. NB client_id/secret in Secrets Manager.",
+      "implementation": "src/lambdas/nb_oauth_callback/handler.py - Full OAuth callback handler that receives authorization code from NB redirect, exchanges for access/refresh tokens via NB OAuth token endpoint, stores tokens in Secrets Manager (nat/user/{user_id}/nb-tokens) with expiration, updates user record with nb_connected=true and nb_token_expires_at. Returns 302 redirect to success or error page. CloudFormation adds Lambda + /auth/nationbuilder/callback GET endpoint. 15 unit tests in tests/test_nb_oauth_callback.py."
+    },
+    {
+      "id": "US-006",
+      "title": "Token refresh Lambda with EventBridge",
+      "description": "As a developer, I want tokens refreshed proactively so that users don't experience auth failures.",
+      "acceptanceCriteria": [
+        "Lambda scans Users table for tokens expiring in next 12 hours",
+        "Lambda refreshes each token using refresh_token",
+        "New tokens stored in Secrets Manager",
+        "Failed refresh sets nb_needs_reauth=true",
+        "EventBridge rule triggers Lambda every 12 hours",
+        "Unit tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "Depends on US-005. NB refresh tokens are single-use.",
+      "implementation": "src/lambdas/token_refresh/handler.py - Scans Users table for nb_connected=true with nb_token_expires_at within 12-hour window. Refreshes via NB OAuth token endpoint (grant_type=refresh_token), stores new tokens in Secrets Manager, updates user record with new expiry. Sets nb_needs_reauth=true on failure. CloudFormation adds Lambda + EventBridge rule (rate(12 hours)). 18 unit tests in tests/test_token_refresh.py."
+    },
+    {
+      "id": "US-007",
+      "title": "Port Nat agent to Lambda",
+      "description": "As a developer, I want the existing Nat agent code deployed as a Lambda function so that it can process user queries.",
+      "acceptanceCriteria": [
+        "Existing src/nat/ code packaged for Lambda",
+        "Lambda handler receives query and user context",
+        "Lambda retrieves NB tokens from Secrets Manager",
+        "Lambda invokes Claude API with all 66 tools",
+        "Lambda returns response (or error) as JSON",
+        "Unit tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "Depends on US-005. Use existing tools.py and agent.py code.",
+      "implementation": "src/lambdas/nat_agent/handler.py - Lambda handler receives query and user context (page_type, person_name, etc.), retrieves NB tokens from Secrets Manager (nat/user/{user_id}/nb-tokens), uses existing create_nat_options() to configure Claude SDK with all 66 NB tools, returns JSON with response and tool_calls. Verifies nb_connected and nb_needs_reauth before processing. CloudFormation adds Lambda (120s timeout, 512MB) + POST /agent/query endpoint. 23 unit tests in tests/test_nat_agent.py."
+    },
+    {
+      "id": "US-008",
+      "title": "SSE streaming response handler",
+      "description": "As a user, I want to see Nat's response stream in real-time so that I know it's working.",
+      "acceptanceCriteria": [
+        "Lambda supports response streaming via Lambda URLs",
+        "API Gateway configured for streaming responses",
+        "Partial responses sent as SSE events",
+        "Final response includes complete message",
+        "Client can receive and parse SSE stream",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": "Depends on US-007. May need Lambda URL instead of API Gateway for streaming.",
+      "implementation": "src/lambdas/nat_agent_streaming/handler.py - New streaming Lambda handler with Lambda URL for true SSE streaming. Uses RESPONSE_STREAM invoke mode. Emits SSE events: text (partial responses), tool_use (tool invocations), tool_result (results), error, and done (final complete response with all tool_calls). CloudFormation adds NatAgentStreamingFunction + NatAgentStreamingUrl (Lambda Function URL with CORS). 25 unit tests in tests/test_nat_agent_streaming.py."
+    },
+    {
+      "id": "US-009",
+      "title": "Usage tracking and rate limiting",
+      "description": "As a developer, I want query usage tracked so that billing limits are enforced.",
+      "acceptanceCriteria": [
+        "Each query increments queries_this_month in Tenants table",
+        "Query rejected if queries_this_month >= queries_limit",
+        "5-second cooldown enforced between queries (429 if too fast)",
+        "Usage resets at billing_cycle_start",
+        "Unit tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": "Depends on US-004, US-007. Integrate with subscription middleware.",
+      "implementation": "src/lambdas/shared/usage_tracking.py - New module with check_rate_limit() for 5-second cooldown, track_query_usage() for incrementing queries_this_month atomically, check_and_reset_billing_cycle() for usage reset. Rate limit returns 429 with Retry-After header. Both nat_agent and nat_agent_streaming handlers integrate rate checking before processing and usage tracking after success. TENANTS_TABLE env var added to Lambda functions. 20 unit tests in tests/test_usage_tracking.py."
+    },
+    {
+      "id": "US-010",
+      "title": "Chrome extension scaffold",
+      "description": "As a developer, I want a Chrome extension project with Manifest V3, Vite, and Preact so that I can build the sidebar UI.",
+      "acceptanceCriteria": [
+        "Extension directory with manifest.json (Manifest V3)",
+        "Vite build configuration for extension",
+        "Preact configured as UI framework",
+        "Extension loads in Chrome without errors",
+        "Matches on *.nationbuilder.com only",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": "New extension/ directory in project root.",
+      "implementation": "extension/ directory with Manifest V3 Chrome extension scaffold. Vite builds content.js (Preact sidebar UI), background.js (service worker), and copies manifest.json + content.css. TypeScript with strict mode and @types/chrome. Content script matches *.nationbuilder.com, injects sidebar container, renders Preact Sidebar component. Background service worker handles auth state via chrome.storage.local. CSS scoped with high z-index to avoid NB conflicts."
+    },
+    {
+      "id": "US-011",
+      "title": "Background service worker",
+      "description": "As a developer, I want a background service worker that manages auth state and API connections.",
+      "acceptanceCriteria": [
+        "Service worker maintains auth token in chrome.storage",
+        "Service worker handles messages from content scripts",
+        "Service worker manages SSE connection to backend",
+        "Service worker broadcasts responses to active tabs",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": "Depends on US-010. Manifest V3 uses service workers, not background pages.",
+      "implementation": "extension/src/background/index.ts - Full service worker with auth state management (AuthState type with token/userId/tenantId/nbConnected/nbNeedsReauth/subscriptionStatus) in chrome.storage.local. Message handling via chrome.runtime.onMessage for GET/SET/CLEAR_AUTH_STATE, SET_NB_CONNECTION, SET_SUBSCRIPTION_STATUS, SUBMIT_QUERY, CANCEL_QUERY, GET_STREAMING_STATE. SSE connection to Lambda streaming URL with proper event parsing (text/tool_use/tool_result/error/done). Broadcasts streaming events to all NationBuilder tabs via chrome.tabs.query/sendMessage. Keepalive alarm mechanism (chrome.alarms) to prevent MV3 service worker termination during streaming."
+    },
+    {
+      "id": "US-012",
+      "title": "Content script and sidebar injection",
+      "description": "As a user, I want a sidebar that appears on NationBuilder pages so that I can chat with Nat.",
+      "acceptanceCriteria": [
+        "Content script injects sidebar container into NB pages",
+        "Sidebar is fixed to right edge, 350px wide",
+        "Sidebar is collapsible to thin strip (icon only)",
+        "Cmd+K / Ctrl+K toggles sidebar visibility",
+        "Sidebar does not break NB page layout",
+        "Verify in browser on nationbuilder.com",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": true,
+      "notes": "Depends on US-010. Use CSS isolation (shadow DOM or scoped styles).",
+      "implementation": "extension/src/content/index.tsx - Content script injects sidebar container and sets up Cmd+K/Ctrl+K keyboard shortcut listener. Updates body margin (350px open, 40px collapsed) to prevent overlap with NB content. extension/src/components/Sidebar.tsx - Preact component with forwardRef exposing toggle() method for keyboard shortcut. Shows 'N' icon in collapsed state. extension/src/content/content.css - CSS for collapsed icon with hover effects. Browser verified on nationbuilder.com - sidebar renders correctly, keyboard shortcut works, body margin adjusts smoothly."
+    },
+    {
+      "id": "US-013",
+      "title": "Chat UI component",
+      "description": "As a user, I want a chat interface so that I can send messages and see Nat's responses.",
+      "acceptanceCriteria": [
+        "Text input field at bottom of sidebar",
+        "Messages displayed in scrollable container",
+        "User messages right-aligned, Nat messages left-aligned",
+        "Streaming responses show typing indicator",
+        "Results show name, city/state, link to NB profile (no PII)",
+        "Verify in browser",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": true,
+      "notes": "Depends on US-012. Connect to background service worker for API calls.",
+      "implementation": "extension/src/components/Chat.tsx - Preact chat component with message state management, input textarea, send/cancel buttons. Messages in scrollable container with user messages right-aligned (purple), assistant messages left-aligned (gray). Streaming responses show animated typing indicator (bouncing dots). Person results display name, city/state, and 'View Profile' link to NB signup page. Connects to background service worker via chrome.runtime.sendMessage (SUBMIT_QUERY, CANCEL_QUERY) and chrome.runtime.onMessage listener for streaming events (STREAMING_TEXT, STREAMING_TOOL_USE, STREAMING_TOOL_RESULT, STREAMING_ERROR, STREAMING_DONE). Updated Sidebar.tsx to include Chat component. CSS in content.css with chat-specific styles and animations."
+    },
+    {
+      "id": "US-014",
+      "title": "Auth flow UI screens",
+      "description": "As a user, I want login and NB connection screens so that I can authenticate with the service.",
+      "acceptanceCriteria": [
+        "If not logged in: show 'Please subscribe' with Stripe link",
+        "If logged in but NB not connected: show 'Connect NationBuilder' button",
+        "If NB needs reauth: show 'Reconnect' banner with explanation",
+        "If subscription lapsed: show 'Payment failed' with update card link",
+        "Verify in browser",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": true,
+      "notes": "Depends on US-013. State from background service worker.",
+      "implementation": "extension/src/components/AuthScreen.tsx - New component with four auth state screens: NotLoggedInScreen (subscribe prompt with Stripe link), NbNotConnectedScreen (connect NationBuilder button), NbNeedsReauthScreen (reconnect banner explaining token expiry), SubscriptionLapsedScreen (payment failed/ended with update card link). useAuthState hook fetches auth state from background worker and listens for changes via AUTH_STATE_CHANGED. Sidebar.tsx integrates AuthScreen, showing loading spinner while fetching, auth screen if needed, or Chat if authenticated. CSS styles added for all auth screen variants with icons, banners, and buttons."
+    },
+    {
+      "id": "US-015",
+      "title": "NB page context detection",
+      "description": "As a user, I want Nat to know what page I'm viewing so that queries are context-aware.",
+      "acceptanceCriteria": [
+        "Content script detects person profile pages (extracts name, ID)",
+        "Content script detects list pages (extracts list name)",
+        "Content script detects event pages (extracts event name)",
+        "Content script detects donation pages (extracts donation info)",
+        "Context shown at top of sidebar ('Viewing: Ian Hines')",
+        "Context sent with queries to backend",
+        "Verify in browser on different NB page types",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": true,
+      "notes": "Depends on US-012. Parse URL patterns and DOM elements.",
+      "implementation": "extension/src/utils/pageContext.ts - New page context detection module with detectPageContext() for person profiles (/admin/signups/{id}), lists (/admin/lists/{id}, /admin/signups?list_id={id}), events (/admin/sites/{slug}/pages/events/{id}), and donations (/admin/finance/donations/{id}). Extracts names/IDs from URL patterns and DOM elements. getContextDisplayText() formats for display. watchForPageChanges() hooks into History API for SPA navigation. Sidebar shows context in header ('Viewing: {name}'). Context passed with SUBMIT_QUERY to backend. CSS styling in content.css."
+    },
+    {
+      "id": "US-016",
+      "title": "Confirmation dialogs",
+      "description": "As a user, I want confirmation before destructive operations so that I don't accidentally modify data.",
+      "acceptanceCriteria": [
+        "Backend flags responses requiring confirmation",
+        "UI shows confirmation dialog with summary of action",
+        "Dialog has Proceed and Cancel buttons",
+        "Proceed sends confirmation to backend, action executes",
+        "Cancel dismisses dialog, no action taken",
+        "Verify in browser",
+        "Typecheck passes"
+      ],
+      "priority": 16,
+      "passes": true,
+      "notes": "Depends on US-013. Backend tool responses include confirmation_required flag.",
+      "implementation": "Backend: Added SSE_EVENT_CONFIRMATION_REQUIRED and DESTRUCTIVE_TOOLS set (delete_signup, delete_contact, delete_donation, delete_event, delete_event_rsvp, delete_path_journey, remove_from_list, update_signup, update_donation, update_event) in nat_agent_streaming/handler.py. When agent calls destructive tool, sends confirmation_required event with tool_id, tool_name, tool_input, and human-readable summary. Client re-submits with confirmed_tools list to proceed. Extension: ConfirmationDialog.tsx component with icon (delete/warning/info), title, summary, warning message, and Cancel/Proceed buttons. Chat.tsx handles STREAMING_CONFIRMATION_REQUIRED event, shows dialog, and calls CONFIRM_ACTION or REJECT_ACTION. Background worker handles confirmation flow and re-submits query with confirmed tools."
+    },
+    {
+      "id": "US-017",
+      "title": "Session undo",
+      "description": "As a user, I want to undo recent actions so that I can recover from mistakes.",
+      "acceptanceCriteria": [
+        "Frontend tracks actions taken this session",
+        "User can say 'undo that' and Nat reverses last action",
+        "Undo stack clears when tab closes",
+        "Only Nat actions are undoable (not manual NB actions)",
+        "Undo tells user what was reversed",
+        "Typecheck passes"
+      ],
+      "priority": 17,
+      "passes": true,
+      "notes": "Depends on US-013. Session storage in extension, undo logic in agent.",
+      "implementation": "Extension: undoStack.ts utility in extension/src/utils/ tracks UndoableAction records in sessionStorage (clears on tab close). Tracks: create_signup, create_contact, create_donation, create_event_rsvp, add_to_list, remove_from_list, add_signup_tagging, remove_signup_tagging. Chat.tsx passes undo stack with queries. Backend: stream_agent_response receives undo_stack parameter. Detects undo-related queries ('undo', 'revert', 'reverse', etc.) and includes recent undoable actions context with instructions for agent. Agent can then call the reverse tool. 10 unit tests for _get_undo_instruction helper."
+    },
+    {
+      "id": "US-018",
+      "title": "Error handling UI",
+      "description": "As a user, I want clear error messages so that I understand what went wrong.",
+      "acceptanceCriteria": [
+        "NB API errors: 'NationBuilder isn't responding right now.'",
+        "Claude API errors: 'Nat is temporarily unavailable.'",
+        "Permission errors: 'Your NB account doesn't have permission to...'",
+        "Query limit errors: 'You've reached your monthly limit. [Upgrade]'",
+        "Rate limit errors: 'Slow down! Wait a few seconds.'",
+        "Verify in browser with mocked errors",
+        "Typecheck passes"
+      ],
+      "priority": 18,
+      "passes": true,
+      "notes": "Depends on US-013. Natural language, no technical jargon.",
+      "implementation": "extension/src/components/ErrorMessage.tsx - New component with getErrorInfo() mapping error codes to user-friendly messages. Maps: NB_NOT_CONNECTED, NB_NEEDS_REAUTH, NB_TOKENS_MISSING, NB_API_ERROR, NB_PERMISSION_ERROR, AGENT_ERROR, PAYMENT_REQUIRED, QUERY_LIMIT_EXCEEDED, RATE_LIMIT_EXCEEDED, CONNECTION_ERROR, TIMEOUT, USER_NOT_FOUND, etc. ErrorMessage component renders styled messages with icons (error/warning/info variants) and optional action buttons (e.g., 'Upgrade Plan' link). Chat.tsx updated to use ErrorMessage for all error states. CSS styles added for three variants with appropriate colors."
+    },
+    {
+      "id": "US-019",
+      "title": "Tutorial walkthrough",
+      "description": "As a first-time user, I want a guided tutorial so that I learn how to use Nat.",
+      "acceptanceCriteria": [
+        "Tutorial shows on first use (after NB connection)",
+        "Step 1: Welcome + what Nat can do",
+        "Step 2: Example queries to try",
+        "Step 3: How to ask for help",
+        "Step 4: How confirmations work",
+        "Tutorial completion stored in chrome.storage",
+        "Skip button available",
+        "Verify in browser",
+        "Typecheck passes"
+      ],
+      "priority": 19,
+      "passes": true,
+      "notes": "Depends on US-014. Show after successful NB OAuth.",
+      "implementation": "extension/src/components/Tutorial.tsx - New 4-step tutorial component: Welcome + what Nat can do (layer icon), Example queries with 4 suggestions (search icon), Getting help with natural language examples (question icon), Confirmations & Safety (shield icon). Uses useTutorialState() hook that checks chrome.storage.local for 'nat_tutorial_completed' key. Sidebar.tsx shows tutorial when showChat && showTutorial (after NB connection but before completion). Progress dots navigation, Skip/Next buttons, keyboard navigation (Enter/Right, Left, Escape). 180 lines CSS with animations."
+    },
+    {
+      "id": "US-020",
+      "title": "Landing page with pricing",
+      "description": "As a visitor, I want a landing page explaining Nat so that I can decide to subscribe.",
+      "acceptanceCriteria": [
+        "Landing page with value proposition",
+        "Pricing table: Starter $49, Team $149, Organization $399",
+        "Feature comparison between tiers",
+        "Subscribe buttons link to Stripe Checkout",
+        "Mobile responsive",
+        "Verify in browser",
+        "Typecheck passes"
+      ],
+      "priority": 20,
+      "passes": true,
+      "notes": "New site/ directory. Static HTML/CSS or simple framework.",
+      "implementation": "site/ directory with Vite + TypeScript. index.html landing page with: Hero (value prop + browser mockup), Features (6 cards: conversation, people, lists, donations, events, security), How It Works (3 steps), Pricing (3-tier cards + comparison table), FAQ (6 questions), CTA, Footer. CSS in src/styles.css with full mobile responsiveness (breakpoints at 1024px, 768px, 480px). Subscribe buttons link to placeholder Stripe URLs. Typecheck passes."
+    },
+    {
+      "id": "US-021",
+      "title": "Stripe Checkout integration",
+      "description": "As a visitor, I want to pay via Stripe Checkout so that I can subscribe to Nat.",
+      "acceptanceCriteria": [
+        "Stripe products created for each tier",
+        "Subscribe button creates Stripe Checkout session",
+        "Checkout includes customer email collection",
+        "Success URL includes session ID for verification",
+        "Cancel URL returns to pricing page",
+        "Typecheck passes"
+      ],
+      "priority": 21,
+      "passes": true,
+      "notes": "Depends on US-020. Use Stripe Checkout Sessions API.",
+      "implementation": "src/lambdas/stripe_checkout/handler.py - Lambda handler creates Stripe Checkout sessions via Stripe API (urllib3). Supports starter/team/organization plans with configurable price IDs. Returns checkout_url and session_id. Success URL includes {CHECKOUT_SESSION_ID} placeholder for verification. CloudFormation adds Lambda + POST /stripe/checkout endpoint with CORS. Landing page JS (site/src/main.ts) calls API on button click, shows loading spinner, redirects to Stripe Checkout URL. 22 unit tests in tests/test_stripe_checkout.py."
+    },
+    {
+      "id": "US-022",
+      "title": "Post-payment success page",
+      "description": "As a new customer, I want a success page after payment so that I know what to do next.",
+      "acceptanceCriteria": [
+        "Success page confirms subscription is active",
+        "Shows 'Install Chrome Extension' with Web Store link",
+        "Explains next steps (install → connect NB → start using)",
+        "Verify in browser after Stripe test checkout",
+        "Typecheck passes"
+      ],
+      "priority": 22,
+      "passes": true,
+      "notes": "Depends on US-021. Verify subscription via Stripe API.",
+      "implementation": "site/success.html - Post-payment success page with 3 states: loading (spinner while verifying), success (green checkmark, plan info, 3-step setup guide), error (red icon, helpful message, action buttons). site/src/success.ts - Verifies subscription via session_id URL param by calling /stripe/verify-session endpoint. Shows plan name, Chrome Web Store install button, keyboard shortcuts (Cmd+K/Ctrl+K), and example queries. 200+ lines responsive CSS. Multi-page Vite build configured in vite.config.ts."
+    },
+    {
+      "id": "US-023",
+      "title": "Terms of Service and Privacy Policy",
+      "description": "As a visitor, I want to read Terms of Service and Privacy Policy so that I understand the agreement.",
+      "acceptanceCriteria": [
+        "Terms of Service page covering usage rules, billing, liability",
+        "Privacy Policy page covering data collection, GDPR compliance",
+        "Links in footer of landing page",
+        "Links in extension settings",
+        "Typecheck passes"
+      ],
+      "priority": 23,
+      "passes": true,
+      "notes": "Depends on US-020. AI-generated, reviewed before launch.",
+      "implementation": "site/terms.html - Comprehensive ToS with 19 sections covering acceptance, service description, account/subscription, acceptable use, NB integration, AI functionality, data/privacy, IP, service availability, termination, warranties, liability, indemnification, governing law, dispute resolution, changes, contact, severability, and entire agreement. site/privacy.html - Privacy Policy with 14 sections covering GDPR/CCPA compliance, data collection, usage, third-party sharing, security, retention, user rights, international transfers, Chrome extension permissions, and contact. Both pages share legal-page CSS styles with responsive design. Extension sidebar footer shows Terms | Privacy links."
+    },
+    {
+      "id": "US-024",
+      "title": "Unit tests for agent tools",
+      "description": "As a developer, I want unit tests for all 66 NB API tools so that I can catch regressions.",
+      "acceptanceCriteria": [
+        "Test file for each tool category (signups, tags, donations, etc.)",
+        "Tests use mocked NB API responses",
+        "Tests cover success and error cases",
+        "All tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 24,
+      "passes": true,
+      "notes": "Depends on US-007. Use pytest with httpx mock.",
+      "implementation": "tests/tools/ directory with 14 test files covering all NB API tool categories: test_signups.py, test_tags.py, test_contacts.py, test_donations.py, test_events.py, test_event_rsvps.py, test_paths.py, test_automations.py, test_lists.py, test_surveys.py, test_petitions.py, test_memberships.py, test_mailings.py, test_misc.py (custom_fields, pledges, broadcasters, elections, voters, pages, donation_tracking). 247 unit tests total with mocked NB API responses via fixtures in tests/tools/conftest.py. Tests cover success cases, error handling, pagination, filtering, includes, and edge cases. Added claude_agent_sdk mock in tests/conftest.py."
+    },
+    {
+      "id": "US-025",
+      "title": "Integration tests for OAuth and Stripe",
+      "description": "As a developer, I want integration tests for auth flows so that I can verify end-to-end behavior.",
+      "acceptanceCriteria": [
+        "Test NB OAuth callback with mocked NB API",
+        "Test token refresh with mocked NB API",
+        "Test Stripe webhook handling with test events",
+        "Test subscription verification flow",
+        "All tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 25,
+      "passes": true,
+      "notes": "Depends on US-003, US-005, US-006.",
+      "implementation": "tests/integration/ directory with 56 integration tests across 4 test files: test_nb_oauth_integration.py (7 tests for OAuth callback flow - new user, reconnecting user, API errors, network errors, different nations), test_token_refresh_integration.py (9 tests for token refresh - single/multiple users, failures, missing tokens), test_stripe_webhook_integration.py (20 tests for webhooks - checkout completed, subscription updated/deleted, signature verification, plan changes), test_subscription_verification_integration.py (20 tests for verification flow - header extraction, status validation, query limits, middleware decorator, end-to-end flows). All tests use mocked AWS services and HTTP responses."
+    },
+    {
+      "id": "US-026",
+      "title": "E2E tests with Playwright",
+      "description": "As a developer, I want E2E tests for the Chrome extension so that I can verify user flows.",
+      "acceptanceCriteria": [
+        "Playwright configured for Chrome extension testing",
+        "Test: extension sidebar renders on NB page",
+        "Test: auth flow shows correct states",
+        "Test: chat message round-trip (mocked backend)",
+        "All tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 26,
+      "passes": true,
+      "notes": "Depends on US-012, US-013, US-014.",
+      "implementation": "extension/e2e/ directory with Playwright E2E tests. playwright.config.ts configures persistent context with --load-extension flag for Chrome extension testing. e2e/mocks/server.ts provides mock NB pages (/admin, /admin/signups/{id}, /admin/lists/{id}, /admin/sites/{slug}/pages/events/{id}) and mock API endpoints. e2e/fixtures.ts provides test utilities: setAuthState(), setTutorialCompleted(), waitForSidebar(), sendChatMessage(), etc. sidebar.spec.ts (11 tests): sidebar renders, collapse/expand, keyboard shortcut (Cmd/Ctrl+K), page context detection. auth.spec.ts (8 tests): all auth states (not logged in, NB not connected, needs reauth, payment failed, cancelled, ready). chat.spec.ts (14 tests): message send/receive, typing indicator, error handling, context display. All Python tests pass (484), extension typecheck passes."
+    },
+    {
+      "id": "US-027",
+      "title": "GitHub Actions CI/CD pipeline",
+      "description": "As a developer, I want automated deployment so that code changes are deployed safely.",
+      "acceptanceCriteria": [
+        "GitHub Actions workflow for test on PR",
+        "GitHub Actions workflow for deploy to staging on main merge",
+        "Manual approval step for production deploy",
+        "CloudFormation deployment via AWS CLI",
+        "Extension build artifacts uploaded to release",
+        "Typecheck passes"
+      ],
+      "priority": 27,
+      "passes": true,
+      "notes": "Depends on US-024, US-025, US-026. Use GitHub environments.",
+      "implementation": ".github/workflows/test.yml - Test workflow runs on PR/push: Python tests (pytest), mypy typecheck, cfn-lint CloudFormation validation, extension typecheck+build, site typecheck+build. Uploads artifacts. .github/workflows/deploy.yml - Deploy workflow: auto-deploys to staging on main merge, production requires manual approval via GitHub environment. Packages Lambda functions, deploys via CloudFormation, uploads code to S3. Creates GitHub release with extension artifact on main merge."
+    }
+  ]
+}
