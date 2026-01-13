@@ -312,8 +312,9 @@
         "Typecheck passes"
       ],
       "priority": 18,
-      "passes": false,
-      "notes": "Depends on US-013. Natural language, no technical jargon."
+      "passes": true,
+      "notes": "Depends on US-013. Natural language, no technical jargon.",
+      "implementation": "extension/src/components/ErrorMessage.tsx - New component with getErrorInfo() mapping error codes to user-friendly messages. Maps: NB_NOT_CONNECTED, NB_NEEDS_REAUTH, NB_TOKENS_MISSING, NB_API_ERROR, NB_PERMISSION_ERROR, AGENT_ERROR, PAYMENT_REQUIRED, QUERY_LIMIT_EXCEEDED, RATE_LIMIT_EXCEEDED, CONNECTION_ERROR, TIMEOUT, USER_NOT_FOUND, etc. ErrorMessage component renders styled messages with icons (error/warning/info variants) and optional action buttons (e.g., 'Upgrade Plan' link). Chat.tsx updated to use ErrorMessage for all error states. CSS styles added for three variants with appropriate colors."
     },
     {
       "id": "US-019",

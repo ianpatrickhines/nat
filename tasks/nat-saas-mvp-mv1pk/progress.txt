@@ -357,3 +357,32 @@ Started: 2025-01-12
 - Undo phrases should be detected case-insensitively with multiple variations
 - Context sections in prompt are powerful for giving agent structured knowledge
 
+## 2025-01-12 - US-018: Error handling UI
+
+**Implementation:**
+- Created `extension/src/components/ErrorMessage.tsx` with comprehensive error mapping
+- `getErrorInfo()` maps error codes to user-friendly messages:
+  - NB_NOT_CONNECTED: "Connect your NationBuilder account..."
+  - NB_NEEDS_REAUTH: "Your NationBuilder connection has expired..."
+  - NB_TOKENS_MISSING, NB_API_ERROR: "NationBuilder isn't responding right now."
+  - NB_PERMISSION_ERROR: "Your NB account doesn't have permission..."
+  - AGENT_ERROR, CLAUDE_ERROR: "Nat is temporarily unavailable."
+  - PAYMENT_REQUIRED, QUERY_LIMIT_EXCEEDED: "You've reached your monthly limit. [Upgrade]"
+  - RATE_LIMIT_EXCEEDED: "Please wait X seconds..." (uses retryAfter)
+  - CONNECTION_ERROR, NETWORK_ERROR: "Connection to the server was lost..."
+  - USER_NOT_FOUND, UNAUTHORIZED: "Your session has expired..."
+- ErrorMessage component renders styled cards with icon, title, message, optional action button
+- Three variants: error (red), warning (amber), info (blue)
+- Added Message.errorDetails interface for storing error info
+- Updated Chat.tsx STREAMING_ERROR handler to use errorDetails
+- Updated submitQuery catch blocks to map common errors to error codes
+- Added 129 lines of CSS for error message styling
+
+**Learnings:**
+- Mapping error codes to user-friendly messages centralizes error UX in one place
+- Including both a title and message helps users quickly understand what happened
+- Action buttons (like "Upgrade Plan") give users a clear path forward
+- Different visual variants (error/warning/info) help convey severity without alarming users unnecessarily
+- Rate limit errors benefit from showing the actual wait time via retryAfter parameter
+- Catching unknown errors and trying to infer context (e.g., checking if "nationbuilder" is in error message) provides better fallback UX
+
