@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from 'preact/hooks';
+import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import { PageContext } from '../utils/pageContext';
+import { ConfirmationDialog, ConfirmationRequest } from './ConfirmationDialog';
 
 // ============================================================================
 // Types
@@ -41,6 +42,7 @@ type BroadcastMessage =
   | { type: 'STREAMING_TOOL_RESULT'; result: string; isError: boolean }
   | { type: 'STREAMING_ERROR'; error: string; errorCode: string; retryAfter?: number }
   | { type: 'STREAMING_DONE'; response: string; toolCalls: ToolCallInfo[] }
+  | { type: 'STREAMING_CONFIRMATION_REQUIRED'; confirmation: ConfirmationRequest }
   | { type: 'AUTH_STATE_CHANGED' }
   | { type: 'TOGGLE_SIDEBAR' };
 
@@ -82,6 +84,7 @@ export function Chat({ pageContext }: ChatProps) {
   const [inputValue, setInputValue] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const [pendingConfirmation, setPendingConfirmation] = useState<ConfirmationRequest | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const toolResultsRef = useRef<Map<string, PersonResult[]>>(new Map());
@@ -200,6 +203,24 @@ export function Chat({ pageContext }: ChatProps) {
           }
           setIsStreaming(false);
           setStreamingMessageId(null);
+          setPendingConfirmation(null);
+          break;
+        }
+
+        case 'STREAMING_CONFIRMATION_REQUIRED': {
+          // Show confirmation dialog
+          setPendingConfirmation(message.confirmation);
+          // Update message to show waiting state
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === streamingMessageId
+                ? {
+                    ...msg,
+                    content: msg.content || 'Waiting for confirmation...',
+                  }
+                : msg
+            )
+          );
           break;
         }
       }
@@ -312,10 +333,55 @@ export function Chat({ pageContext }: ChatProps) {
 
       setIsStreaming(false);
       setStreamingMessageId(null);
+      setPendingConfirmation(null);
     } catch {
       // Ignore errors when cancelling
     }
   };
+
+  // Handle confirmation of destructive action
+  const handleConfirmAction = useCallback(async (toolId: string) => {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'CONFIRM_ACTION',
+        toolId,
+      });
+
+      if (!response.success) {
+        // Show error in current message
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === streamingMessageId
+              ? {
+                  ...msg,
+                  content: response.error || 'Failed to confirm action',
+                }
+              : msg
+          )
+        );
+      }
+
+      // Clear pending confirmation - the response will come through streaming
+      setPendingConfirmation(null);
+      setIsStreaming(true);
+    } catch (error) {
+      console.error('Failed to confirm action:', error);
+      setPendingConfirmation(null);
+    }
+  }, [streamingMessageId]);
+
+  // Handle rejection of destructive action
+  const handleRejectAction = useCallback(async () => {
+    try {
+      await chrome.runtime.sendMessage({ type: 'REJECT_ACTION' });
+      setPendingConfirmation(null);
+      setIsStreaming(false);
+      setStreamingMessageId(null);
+    } catch (error) {
+      console.error('Failed to reject action:', error);
+      setPendingConfirmation(null);
+    }
+  }, []);
 
   return (
     <div className="nat-chat">
@@ -415,6 +481,15 @@ export function Chat({ pageContext }: ChatProps) {
           </button>
         )}
       </form>
+
+      {/* Confirmation dialog */}
+      {pendingConfirmation && (
+        <ConfirmationDialog
+          confirmation={pendingConfirmation}
+          onConfirm={handleConfirmAction}
+          onCancel={handleRejectAction}
+        />
+      )}
     </div>
   );
 }

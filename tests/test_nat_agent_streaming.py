@@ -298,6 +298,7 @@ class TestProcessStreamingRequest:
         """Test that missing NB tokens returns error event."""
         mock_get_user.return_value = {
             "user_id": TEST_USER_ID,
+            "tenant_id": TEST_TENANT_ID,
             "nb_connected": True,
             "nb_needs_reauth": False,
         }

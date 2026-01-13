@@ -40,6 +40,22 @@ SSE_EVENT_TOOL_USE = "tool_use"
 SSE_EVENT_TOOL_RESULT = "tool_result"
 SSE_EVENT_ERROR = "error"
 SSE_EVENT_DONE = "done"
+SSE_EVENT_CONFIRMATION_REQUIRED = "confirmation_required"
+
+# Tools that require user confirmation before execution
+DESTRUCTIVE_TOOLS = {
+    "delete_signup",
+    "delete_contact",
+    "delete_donation",
+    "delete_event",
+    "delete_event_rsvp",
+    "delete_path_journey",
+    "remove_from_list",
+    # Update operations that could significantly change data
+    "update_signup",
+    "update_donation",
+    "update_event",
+}
 
 
 def get_secrets_manager_client() -> Any:
@@ -145,12 +161,42 @@ def format_sse_event(event_type: str, data: dict[str, Any]) -> str:
     return f"event: {event_type}\ndata: {json_data}\n\n"
 
 
+def generate_tool_summary(tool_name: str, tool_input: dict[str, Any]) -> str:
+    """
+    Generate a human-readable summary of a tool action for confirmation dialogs.
+
+    Args:
+        tool_name: The name of the tool
+        tool_input: The input parameters for the tool
+
+    Returns:
+        Human-readable summary of the action
+    """
+    summaries = {
+        "delete_signup": lambda i: f"Delete person record {i.get('person_id', 'unknown')}",
+        "delete_contact": lambda i: f"Delete contact record {i.get('id', 'unknown')}",
+        "delete_donation": lambda i: f"Delete donation record {i.get('id', 'unknown')}",
+        "delete_event": lambda i: f"Delete event {i.get('id', 'unknown')}",
+        "delete_event_rsvp": lambda i: f"Delete RSVP {i.get('id', 'unknown')} from event",
+        "delete_path_journey": lambda i: f"Delete journey {i.get('id', 'unknown')} from path",
+        "remove_from_list": lambda i: f"Remove person {i.get('person_id', 'unknown')} from list {i.get('list_id', 'unknown')}",
+        "update_signup": lambda i: f"Update person record {i.get('person_id', 'unknown')}",
+        "update_donation": lambda i: f"Update donation record {i.get('id', 'unknown')}",
+        "update_event": lambda i: f"Update event {i.get('id', 'unknown')}",
+    }
+
+    if tool_name in summaries:
+        return summaries[tool_name](tool_input)
+    return f"Execute {tool_name}"
+
+
 async def stream_agent_response(
     query: str,
     nb_slug: str,
     nb_token: str,
     model: str,
-    context: dict[str, Any] | None = None
+    context: dict[str, Any] | None = None,
+    confirmed_tools: set[str] | None = None
 ) -> AsyncGenerator[str, None]:
     """
     Stream responses from the Nat agent as SSE events.
@@ -161,6 +207,7 @@ async def stream_agent_response(
         nb_token: NationBuilder API token
         model: Claude model to use
         context: Optional page context from extension
+        confirmed_tools: Set of tool_id values that have been confirmed by user
 
     Yields:
         SSE formatted strings
@@ -174,6 +221,8 @@ async def stream_agent_response(
         ResultMessage,
     )
     from nat.agent import create_nat_options
+
+    confirmed = confirmed_tools or set()
 
     # Build the full prompt with context if provided
     full_prompt = query
@@ -211,6 +260,20 @@ async def stream_agent_response(
                                 "text": block.text
                             })
                         elif isinstance(block, ToolUseBlock):
+                            # Check if this is a destructive tool requiring confirmation
+                            tool_id = f"{block.name}_{hash(json.dumps(block.input, sort_keys=True))}"
+
+                            if block.name in DESTRUCTIVE_TOOLS and tool_id not in confirmed:
+                                # Send confirmation_required event and pause
+                                yield format_sse_event(SSE_EVENT_CONFIRMATION_REQUIRED, {
+                                    "tool_id": tool_id,
+                                    "tool_name": block.name,
+                                    "tool_input": block.input,
+                                    "summary": generate_tool_summary(block.name, block.input),
+                                })
+                                # Return early - client must re-submit with confirmation
+                                return
+
                             # Notify client about tool invocation
                             tool_info = {
                                 "name": block.name,
@@ -258,6 +321,8 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
     query = body.get("query")
     user_id = body.get("user_id")
     page_context = body.get("context", {})
+    confirmed_tools_list: list[str] = body.get("confirmed_tools", [])
+    confirmed_tools = set(confirmed_tools_list) if confirmed_tools_list else set()
 
     if not query:
         yield format_sse_event(SSE_EVENT_ERROR, {
@@ -340,6 +405,7 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
         nb_token=nb_token,
         model=CLAUDE_MODEL,
         context=page_context,
+        confirmed_tools=confirmed_tools,
     ):
         yield event
         # Check if this is a successful done event (no error in response)

@@ -28,7 +28,7 @@ interface QueryRequest {
 }
 
 interface SSEEvent {
-  type: 'text' | 'tool_use' | 'tool_result' | 'error' | 'done';
+  type: 'text' | 'tool_use' | 'tool_result' | 'error' | 'done' | 'confirmation_required';
   data: Record<string, unknown>;
 }
 
@@ -41,8 +41,11 @@ interface StreamingState {
   isStreaming: boolean;
   abortController: AbortController | null;
   currentQuery: string | null;
+  currentContext: PageContext | null;
   partialResponse: string;
   toolCalls: ToolCallInfo[];
+  confirmedTools: string[];
+  pendingConfirmation: ConfirmationRequest | null;
 }
 
 // Message types from content scripts
@@ -54,7 +57,17 @@ type MessageType =
   | { type: 'SET_SUBSCRIPTION_STATUS'; status: AuthState['subscriptionStatus'] }
   | { type: 'SUBMIT_QUERY'; query: string; context?: PageContext }
   | { type: 'CANCEL_QUERY' }
-  | { type: 'GET_STREAMING_STATE' };
+  | { type: 'GET_STREAMING_STATE' }
+  | { type: 'CONFIRM_ACTION'; toolId: string }
+  | { type: 'REJECT_ACTION' };
+
+// Confirmation request info
+interface ConfirmationRequest {
+  toolId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  summary: string;
+}
 
 // Message types to content scripts
 type BroadcastMessage =
@@ -64,6 +77,7 @@ type BroadcastMessage =
   | { type: 'STREAMING_TOOL_RESULT'; result: string; isError: boolean }
   | { type: 'STREAMING_ERROR'; error: string; errorCode: string; retryAfter?: number }
   | { type: 'STREAMING_DONE'; response: string; toolCalls: ToolCallInfo[] }
+  | { type: 'STREAMING_CONFIRMATION_REQUIRED'; confirmation: ConfirmationRequest }
   | { type: 'TOGGLE_SIDEBAR' };
 
 // ============================================================================
@@ -82,8 +96,11 @@ let streamingState: StreamingState = {
   isStreaming: false,
   abortController: null,
   currentQuery: null,
+  currentContext: null,
   partialResponse: '',
   toolCalls: [],
+  confirmedTools: [],
+  pendingConfirmation: null,
 };
 
 // ============================================================================
@@ -357,6 +374,26 @@ async function handleSSEEvent(event: SSEEvent): Promise<void> {
       streamingState.partialResponse = '';
       streamingState.toolCalls = [];
       streamingState.currentQuery = null;
+      streamingState.currentContext = null;
+      streamingState.confirmedTools = [];
+      streamingState.pendingConfirmation = null;
+      break;
+    }
+
+    case 'confirmation_required': {
+      const confirmation: ConfirmationRequest = {
+        toolId: event.data.tool_id as string,
+        toolName: event.data.tool_name as string,
+        toolInput: event.data.tool_input as Record<string, unknown>,
+        summary: event.data.summary as string,
+      };
+      streamingState.pendingConfirmation = confirmation;
+      streamingState.isStreaming = false; // Pause streaming while waiting for confirmation
+
+      await broadcastToNbTabs({
+        type: 'STREAMING_CONFIRMATION_REQUIRED',
+        confirmation,
+      });
       break;
     }
   }
@@ -390,12 +427,15 @@ async function submitQuery(request: QueryRequest): Promise<{ success: boolean; e
     return { success: false, error: 'Subscription is not active' };
   }
 
-  // Reset streaming state
+  // Reset streaming state (preserve confirmedTools for re-submission)
   streamingState.isStreaming = true;
   streamingState.abortController = new AbortController();
   streamingState.currentQuery = request.query;
+  streamingState.currentContext = request.context || null;
   streamingState.partialResponse = '';
   streamingState.toolCalls = [];
+  streamingState.pendingConfirmation = null;
+  // Note: don't reset confirmedTools here - they may be set from a previous confirmation
 
   try {
     // Get auth token for API call
@@ -418,6 +458,7 @@ async function submitQuery(request: QueryRequest): Promise<{ success: boolean; e
         query: request.query,
         user_id: authState.userId,
         context: request.context || {},
+        confirmed_tools: streamingState.confirmedTools,
       }),
       signal: streamingState.abortController.signal,
     });
@@ -474,14 +515,68 @@ async function submitQuery(request: QueryRequest): Promise<{ success: boolean; e
 function cancelQuery(): boolean {
   if (streamingState.abortController) {
     streamingState.abortController.abort();
-    streamingState.isStreaming = false;
-    streamingState.abortController = null;
-    streamingState.currentQuery = null;
-    streamingState.partialResponse = '';
-    streamingState.toolCalls = [];
-    return true;
   }
-  return false;
+  streamingState.isStreaming = false;
+  streamingState.abortController = null;
+  streamingState.currentQuery = null;
+  streamingState.currentContext = null;
+  streamingState.partialResponse = '';
+  streamingState.toolCalls = [];
+  streamingState.confirmedTools = [];
+  streamingState.pendingConfirmation = null;
+  return true;
+}
+
+/**
+ * Confirm the pending action and re-submit the query
+ */
+async function confirmAction(toolId: string): Promise<{ success: boolean; error?: string }> {
+  if (!streamingState.pendingConfirmation) {
+    return { success: false, error: 'No pending confirmation' };
+  }
+
+  if (streamingState.pendingConfirmation.toolId !== toolId) {
+    return { success: false, error: 'Tool ID mismatch' };
+  }
+
+  if (!streamingState.currentQuery) {
+    return { success: false, error: 'No current query to re-submit' };
+  }
+
+  // Add the confirmed tool to the list
+  streamingState.confirmedTools.push(toolId);
+  streamingState.pendingConfirmation = null;
+
+  // Re-submit the query with the confirmed tools
+  return submitQuery({
+    query: streamingState.currentQuery,
+    context: streamingState.currentContext || undefined,
+  });
+}
+
+/**
+ * Reject the pending action and cancel the query
+ */
+async function rejectAction(): Promise<{ success: boolean }> {
+  if (streamingState.pendingConfirmation) {
+    streamingState.pendingConfirmation = null;
+  }
+
+  // Broadcast that the action was cancelled
+  await broadcastToNbTabs({
+    type: 'STREAMING_DONE',
+    response: 'Action cancelled by user.',
+    toolCalls: streamingState.toolCalls,
+  });
+
+  // Reset streaming state
+  streamingState.currentQuery = null;
+  streamingState.currentContext = null;
+  streamingState.partialResponse = '';
+  streamingState.toolCalls = [];
+  streamingState.confirmedTools = [];
+
+  return { success: true };
 }
 
 // ============================================================================
@@ -551,8 +646,21 @@ chrome.runtime.onMessage.addListener((
         currentQuery: streamingState.currentQuery,
         partialResponse: streamingState.partialResponse,
         toolCalls: streamingState.toolCalls,
+        pendingConfirmation: streamingState.pendingConfirmation,
       });
       return false;
+    }
+
+    case 'CONFIRM_ACTION': {
+      confirmAction(message.toolId)
+        .then((result) => sendResponse(result));
+      return true;
+    }
+
+    case 'REJECT_ACTION': {
+      rejectAction()
+        .then((result) => sendResponse(result));
+      return true;
     }
   }
 
@@ -608,4 +716,4 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 // Export for potential testing (though service workers don't really support module exports)
 // These would be used by any testing framework
-export type { AuthState, PageContext, QueryRequest, SSEEvent, StreamingState, MessageType, BroadcastMessage };
+export type { AuthState, PageContext, QueryRequest, SSEEvent, StreamingState, MessageType, BroadcastMessage, ConfirmationRequest };
