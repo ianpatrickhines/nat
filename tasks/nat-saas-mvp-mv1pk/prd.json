@@ -84,8 +84,9 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": "Depends on US-001, US-002. NB client_id/secret in Secrets Manager."
+      "passes": true,
+      "notes": "Depends on US-001, US-002. NB client_id/secret in Secrets Manager.",
+      "implementation": "src/lambdas/nb_oauth_callback/handler.py - Full OAuth callback handler that receives authorization code from NB redirect, exchanges for access/refresh tokens via NB OAuth token endpoint, stores tokens in Secrets Manager (nat/user/{user_id}/nb-tokens) with expiration, updates user record with nb_connected=true and nb_token_expires_at. Returns 302 redirect to success or error page. CloudFormation adds Lambda + /auth/nationbuilder/callback GET endpoint. 15 unit tests in tests/test_nb_oauth_callback.py."
     },
     {
       "id": "US-006",

@@ -72,3 +72,23 @@ Started: 2025-01-12
 - API Gateway may lowercase headers - normalize to lowercase for comparison
 - TypedDict is useful for documenting Lambda response structure while maintaining dict compatibility
 - Decorator pattern allows clean integration with existing Lambda handlers while providing error handling
+
+## 2025-01-12 - US-005: NationBuilder OAuth callback Lambda
+
+**Implementation:**
+- Created `src/lambdas/nb_oauth_callback/handler.py` with full OAuth callback handler
+- Receives OAuth callback with authorization code and base64-encoded state parameter
+- State contains: user_id, nb_slug, redirect_uri for reconstructing the flow
+- Exchanges authorization code for access_token and refresh_token via NB token endpoint
+- Stores tokens in Secrets Manager at `nat/user/{user_id}/nb-tokens` with metadata (expires_at, nb_slug)
+- Updates user record: nb_connected=true, nb_slug, nb_token_expires_at, nb_needs_reauth=false
+- Returns 302 redirect to success page on success, error page with error query param on failure
+- CloudFormation: Lambda function + `/auth/nationbuilder/callback` GET endpoint with CORS
+- 15 unit tests covering success flow, error handling, edge cases
+
+**Learnings:**
+- NB OAuth tokens endpoint expects form-encoded POST body, not JSON
+- State parameter is base64-encoded JSON to pass user context through OAuth redirect flow
+- Token exchange uses urllib3 directly since boto3 doesn't have HTTP client
+- Secrets Manager `put_secret_value` raises `ResourceNotFoundException` if secret doesn't exist - need fallback to `create_secret`
+- OAuth callback returns redirect (302) not JSON - browser handles redirect automatically
