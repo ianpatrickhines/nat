@@ -1,3 +1,35 @@
 # Ralph Progress Log - nat-saas-mvp
 Started: 2025-01-12
 ---
+
+## 2025-01-12 - US-001: CloudFormation base infrastructure
+
+**Implementation:**
+- Created `infrastructure/template.yaml` with CloudFormation resources
+- Tenants table: tenant_id PK, stripe_customer_id GSI, PAY_PER_REQUEST, PITR enabled
+- Users table: user_id PK, tenant_id GSI, email GSI, PAY_PER_REQUEST, PITR enabled
+- Lambda execution role with policies for DynamoDB (CRUD on both tables + indexes) and Secrets Manager (nat/* secrets)
+- All stateful resources have DeletionPolicy: Retain
+- Added `pyproject.toml` with mypy and cfn-lint configuration
+
+**Learnings:**
+- Project has pre-existing Python code in src/nat/ with type issues - future stories should not break existing mypy
+- cfn-lint is the preferred way to validate CloudFormation in this project
+- Template exports table names/ARNs and role ARN for cross-stack references
+
+## 2025-01-12 - US-002: API Gateway REST API setup
+
+**Implementation:**
+- Added API Gateway REST API (`nat-api-${Environment}`) to `infrastructure/template.yaml`
+- Created `/health` endpoint with MOCK integration returning `{"status": "healthy"}` and 200 OK
+- Configured CORS headers on health endpoint (GET + OPTIONS preflight)
+- Added GatewayResponse resources for CORS headers on 4XX and 5XX error responses
+- CORS allows all origins (`*`) with standard headers + custom `X-Nat-User-Id`, `X-Nat-Tenant-Id`
+- Added deployment and stage resources for environment-specific URLs
+- Exported API Gateway ID, Root Resource ID, API URL, and Health Check URL
+
+**Learnings:**
+- API Gateway MOCK integrations can't use CloudFormation `${Variable}` substitution in response templates - they're runtime templates
+- GatewayResponse resources are required for CORS headers on error responses (4XX/5XX)
+- Custom domain parameter left commented out as placeholder - will need ACM certificate and Route 53 for full implementation
+- OPTIONS preflight methods required for each resource that will receive cross-origin requests

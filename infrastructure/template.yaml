@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Nat SaaS MVP - Base Infrastructure (DynamoDB tables and IAM roles)
+Description: Nat SaaS MVP - Base Infrastructure (DynamoDB, IAM, and API Gateway)
 
 Parameters:
   Environment:
@@ -10,6 +10,12 @@ Parameters:
       - staging
       - prod
     Description: Deployment environment
+
+  # Placeholder for future custom domain support - not wired up yet
+  # CustomDomainName:
+  #   Type: String
+  #   Default: ''
+  #   Description: Optional custom domain name for the API (e.g., api.natassistant.com)
 
 Resources:
   # =============================================================================
@@ -137,6 +143,127 @@ Resources:
         - Key: Project
           Value: nat
 
+  # =============================================================================
+  # API Gateway
+  # =============================================================================
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub 'nat-api-${Environment}'
+      Description: Nat SaaS MVP API Gateway
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
+  # Health check resource and method
+  HealthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: health
+
+  HealthMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref HealthResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"status": "healthy"}'
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: Empty
+
+  # CORS OPTIONS method for health endpoint
+  HealthOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref HealthResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Nat-User-Id,X-Nat-Tenant-Id'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: Empty
+
+  # Gateway Response for CORS on 4XX errors
+  GatewayResponseDefault4XX:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResponseType: DEFAULT_4XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Nat-User-Id,X-Nat-Tenant-Id'"
+
+  # Gateway Response for CORS on 5XX errors
+  GatewayResponseDefault5XX:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResponseType: DEFAULT_5XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Nat-User-Id,X-Nat-Tenant-Id'"
+
+  # API Deployment
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - HealthMethod
+      - HealthOptionsMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+      Description: !Sub 'Deployment for ${Environment}'
+
+  # API Stage
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref ApiGateway
+      DeploymentId: !Ref ApiDeployment
+      StageName: !Ref Environment
+      Description: !Sub 'Stage for ${Environment} environment'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
 Outputs:
   TenantsTableName:
     Description: Name of the Tenants DynamoDB table
@@ -173,3 +300,27 @@ Outputs:
     Value: !Ref LambdaExecutionRole
     Export:
       Name: !Sub '${AWS::StackName}-LambdaExecutionRoleName'
+
+  ApiGatewayId:
+    Description: ID of the API Gateway REST API
+    Value: !Ref ApiGateway
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiGatewayId'
+
+  ApiGatewayRootResourceId:
+    Description: Root resource ID of the API Gateway
+    Value: !GetAtt ApiGateway.RootResourceId
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiGatewayRootResourceId'
+
+  ApiGatewayUrl:
+    Description: URL of the API Gateway
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiGatewayUrl'
+
+  HealthCheckUrl:
+    Description: URL of the health check endpoint
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/health'
+    Export:
+      Name: !Sub '${AWS::StackName}-HealthCheckUrl'

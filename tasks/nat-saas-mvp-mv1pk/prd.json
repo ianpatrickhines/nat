@@ -15,8 +15,9 @@
         "Typecheck passes"
       ],
       "priority": 1,
-      "passes": false,
-      "notes": "Foundation for all other stories. Tables schema per SPEC.md Data Model section."
+      "passes": true,
+      "notes": "Foundation for all other stories. Tables schema per SPEC.md Data Model section.",
+      "implementation": "infrastructure/template.yaml - CloudFormation with Tenants/Users tables, Lambda IAM role. Validated with cfn-lint."
     },
     {
       "id": "US-002",
@@ -30,8 +31,9 @@
         "Typecheck passes"
       ],
       "priority": 2,
-      "passes": false,
-      "notes": "Depends on US-001. Add to existing CloudFormation template."
+      "passes": true,
+      "notes": "Depends on US-001. Add to existing CloudFormation template.",
+      "implementation": "Added API Gateway REST API to infrastructure/template.yaml with /health endpoint (MOCK 200 OK), CORS headers on all responses including 4XX/5XX, OPTIONS preflight methods, and custom domain parameter placeholder. Validated with cfn-lint."
     },
     {
       "id": "US-003",
