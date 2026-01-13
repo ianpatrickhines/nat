@@ -171,8 +171,9 @@
         "Typecheck passes"
       ],
       "priority": 10,
-      "passes": false,
-      "notes": "New extension/ directory in project root."
+      "passes": true,
+      "notes": "New extension/ directory in project root.",
+      "implementation": "extension/ directory with Manifest V3 Chrome extension scaffold. Vite builds content.js (Preact sidebar UI), background.js (service worker), and copies manifest.json + content.css. TypeScript with strict mode and @types/chrome. Content script matches *.nationbuilder.com, injects sidebar container, renders Preact Sidebar component. Background service worker handles auth state via chrome.storage.local. CSS scoped with high z-index to avoid NB conflicts."
     },
     {
       "id": "US-011",

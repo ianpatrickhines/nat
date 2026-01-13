@@ -179,3 +179,25 @@ Started: 2025-01-12
 - Usage tracking happens AFTER successful query to avoid charging for failed requests
 - For streaming, need to detect success by checking done event without error
 - Retry-After header in 429 response helps clients implement proper backoff
+## 2025-01-12 - US-010: Chrome extension scaffold
+
+**Implementation:**
+- Created `extension/` directory with complete Manifest V3 Chrome extension scaffold
+- `public/manifest.json` - Manifest V3 with storage/activeTab permissions, host_permissions for *.nationbuilder.com
+- `vite.config.ts` - Builds content.js and background.js, copies manifest.json and content.css to dist
+- `tsconfig.json` - TypeScript strict mode with Preact JSX config and @types/chrome
+- `src/content/index.tsx` - Entry point that injects sidebar container on NB pages
+- `src/components/Sidebar.tsx` - Preact component with open/collapsed states (350px/40px)
+- `src/content/content.css` - Scoped CSS with maximum z-index and style reset to avoid NB conflicts
+- `src/background/index.ts` - Service worker with auth state management and message passing
+- Build produces: content.js (13.99kb), background.js (0.80kb), content.css, manifest.json
+
+**Learnings:**
+- Manifest V3 uses service workers instead of background pages - no persistent state
+- chrome.storage.local is the correct place for auth tokens in MV3 (not localStorage)
+- Content scripts need CSS isolation - using `all: initial` and high z-index prevents NB style conflicts
+- Vite custom plugin for closeBundle hook copies non-bundled files (manifest.json, css) to dist
+- @types/chrome provides TypeScript definitions for chrome.* APIs
+- Preact with `jsxImportSource: "preact"` in tsconfig works seamlessly as React replacement
+- Extension can load without icons - Chrome uses default placeholder icon
+
