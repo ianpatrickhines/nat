@@ -522,6 +522,7 @@ Resources:
       Environment:
         Variables:
           USERS_TABLE: !Ref UsersTable
+          TENANTS_TABLE: !Ref TenantsTable
           ANTHROPIC_API_KEY_SECRET: !Sub 'nat/anthropic-api-key-${Environment}'
           CLAUDE_MODEL: 'claude-haiku-4-5-20251001'
       Tags:
@@ -624,6 +625,7 @@ Resources:
       Environment:
         Variables:
           USERS_TABLE: !Ref UsersTable
+          TENANTS_TABLE: !Ref TenantsTable
           ANTHROPIC_API_KEY_SECRET: !Sub 'nat/anthropic-api-key-${Environment}'
           CLAUDE_MODEL: 'claude-haiku-4-5-20251001'
       Tags:

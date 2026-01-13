@@ -16,11 +16,19 @@ from typing import Any, TypedDict
 import boto3
 from botocore.exceptions import ClientError
 
+from src.lambdas.shared.usage_tracking import (
+    RateLimitError,
+    check_rate_limit,
+    track_query_usage,
+    check_and_reset_billing_cycle,
+)
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # Environment variables
 USERS_TABLE = os.environ.get("USERS_TABLE", "nat-users-dev")
+TENANTS_TABLE = os.environ.get("TENANTS_TABLE", "nat-tenants-dev")
 ANTHROPIC_API_KEY_SECRET = os.environ.get(
     "ANTHROPIC_API_KEY_SECRET", "nat/anthropic-api-key"
 )
@@ -332,6 +340,38 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
                 "headers": headers,
             }
 
+        # Get tenant_id for usage tracking
+        tenant_id = user_info.get("tenant_id", "")
+        if not tenant_id:
+            return {
+                "statusCode": 403,
+                "body": json.dumps({
+                    "error": "User has no tenant association",
+                    "error_code": "NO_TENANT"
+                }),
+                "headers": headers,
+            }
+
+        # Check if billing cycle has reset
+        check_and_reset_billing_cycle(tenant_id)
+
+        # Check rate limit (5-second cooldown)
+        try:
+            check_rate_limit(user_id)
+        except RateLimitError as e:
+            return {
+                "statusCode": 429,
+                "body": json.dumps({
+                    "error": e.message,
+                    "error_code": "RATE_LIMIT_EXCEEDED",
+                    "retry_after": e.retry_after,
+                }),
+                "headers": {
+                    **headers,
+                    "Retry-After": str(e.retry_after),
+                },
+            }
+
         # Get NB tokens
         tokens = get_nb_tokens(user_id)
         if not tokens:
@@ -368,6 +408,10 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
                 }),
                 "headers": headers,
             }
+
+        # Track usage after successful query
+        new_query_count = track_query_usage(user_id, tenant_id)
+        logger.info(f"Query successful. Tenant {tenant_id} now at {new_query_count} queries")
 
         return {
             "statusCode": 200,

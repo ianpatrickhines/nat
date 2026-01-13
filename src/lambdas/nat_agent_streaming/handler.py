@@ -16,11 +16,19 @@ from typing import Any, AsyncGenerator
 import boto3
 from botocore.exceptions import ClientError
 
+from src.lambdas.shared.usage_tracking import (
+    RateLimitError,
+    check_rate_limit,
+    track_query_usage,
+    check_and_reset_billing_cycle,
+)
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # Environment variables
 USERS_TABLE = os.environ.get("USERS_TABLE", "nat-users-dev")
+TENANTS_TABLE = os.environ.get("TENANTS_TABLE", "nat-tenants-dev")
 ANTHROPIC_API_KEY_SECRET = os.environ.get(
     "ANTHROPIC_API_KEY_SECRET", "nat/anthropic-api-key"
 )
@@ -290,6 +298,29 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
         })
         return
 
+    # Get tenant_id for usage tracking
+    tenant_id = user_info.get("tenant_id", "")
+    if not tenant_id:
+        yield format_sse_event(SSE_EVENT_ERROR, {
+            "error": "User has no tenant association",
+            "error_code": "NO_TENANT",
+        })
+        return
+
+    # Check if billing cycle has reset
+    check_and_reset_billing_cycle(tenant_id)
+
+    # Check rate limit (5-second cooldown)
+    try:
+        check_rate_limit(user_id)
+    except RateLimitError as e:
+        yield format_sse_event(SSE_EVENT_ERROR, {
+            "error": e.message,
+            "error_code": "RATE_LIMIT_EXCEEDED",
+            "retry_after": e.retry_after,
+        })
+        return
+
     # Get NB tokens
     tokens = get_nb_tokens(user_id)
     if not tokens:
@@ -301,7 +332,8 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
 
     nb_token, nb_slug = tokens
 
-    # Stream the agent response
+    # Stream the agent response and track whether it succeeded
+    stream_succeeded = False
     async for event in stream_agent_response(
         query=query,
         nb_slug=nb_slug,
@@ -310,6 +342,14 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
         context=page_context,
     ):
         yield event
+        # Check if this is a successful done event (no error in response)
+        if SSE_EVENT_DONE in event and '"error":' not in event:
+            stream_succeeded = True
+
+    # Track usage after successful streaming completion
+    if stream_succeeded:
+        new_query_count = track_query_usage(user_id, tenant_id)
+        logger.info(f"Streaming query successful. Tenant {tenant_id} now at {new_query_count} queries")
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
