@@ -205,8 +205,9 @@
         "Typecheck passes"
       ],
       "priority": 12,
-      "passes": false,
-      "notes": "Depends on US-010. Use CSS isolation (shadow DOM or scoped styles)."
+      "passes": true,
+      "notes": "Depends on US-010. Use CSS isolation (shadow DOM or scoped styles).",
+      "implementation": "extension/src/content/index.tsx - Content script injects sidebar container and sets up Cmd+K/Ctrl+K keyboard shortcut listener. Updates body margin (350px open, 40px collapsed) to prevent overlap with NB content. extension/src/components/Sidebar.tsx - Preact component with forwardRef exposing toggle() method for keyboard shortcut. Shows 'N' icon in collapsed state. extension/src/content/content.css - CSS for collapsed icon with hover effects. Browser verified on nationbuilder.com - sidebar renders correctly, keyboard shortcut works, body margin adjusts smoothly."
     },
     {
       "id": "US-013",

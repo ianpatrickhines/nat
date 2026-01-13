@@ -222,3 +222,23 @@ Started: 2025-01-12
 - AbortController works in service workers for cancelling fetch requests
 - ReadableStreamDefaultReader with TextDecoder handles chunked SSE responses properly
 
+## 2025-01-12 - US-012: Content script and sidebar injection
+
+**Implementation:**
+- Enhanced `extension/src/content/index.tsx` with keyboard shortcut handler
+- Cmd+K (Mac) / Ctrl+K (Windows/Linux) toggles sidebar open/closed
+- Body margin adjusts dynamically (350px open, 40px collapsed) to prevent overlap
+- Enhanced `extension/src/components/Sidebar.tsx` with forwardRef and SidebarHandle
+- Exposed toggle() method via useImperativeHandle for keyboard shortcut
+- Added collapsed state UI showing purple "N" icon with hover effects
+- Toggle button includes keyboard shortcut hint in tooltip
+- Added CSS for collapsed state in `extension/src/content/content.css`
+- Browser tested on nationbuilder.com - all functionality verified
+
+**Learnings:**
+- forwardRef + useImperativeHandle in Preact works identically to React for exposing methods
+- `navigator.platform.toUpperCase().indexOf('MAC') >= 0` reliably detects Mac for modifier key selection
+- Body margin animation syncs with sidebar width transition using same timing (0.2s ease)
+- Content script keyboard listeners need event.preventDefault() and event.stopPropagation() to prevent NB shortcuts from interfering
+- Playwright can test Chrome extensions using launch_persistent_context with --load-extension arg
+
