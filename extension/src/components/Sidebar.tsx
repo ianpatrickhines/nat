@@ -1,6 +1,7 @@
 import { useState, useImperativeHandle, forwardRef } from 'preact/compat';
 import { Chat } from './Chat';
 import { AuthScreen, useAuthState, getAuthScreenType } from './AuthScreen';
+import { Tutorial, useTutorialState } from './Tutorial';
 import { PageContext, getContextDisplayText } from '../utils/pageContext';
 
 export interface SidebarHandle {
@@ -20,6 +21,7 @@ export const Sidebar = forwardRef<SidebarHandle, SidebarProps>(
     const [isOpen, setIsOpen] = useState(initialOpen);
     const [pageContext, setPageContext] = useState<PageContext | null>(initialPageContext || null);
     const { authState, isLoading } = useAuthState();
+    const { showTutorial, isLoading: tutorialLoading, completeTutorial } = useTutorialState();
 
     const toggleSidebar = () => {
       const newState = !isOpen;
@@ -66,13 +68,17 @@ export const Sidebar = forwardRef<SidebarHandle, SidebarProps>(
             </header>
 
             <main className="nat-sidebar__main">
-              {isLoading ? (
+              {isLoading || tutorialLoading ? (
                 <div className="nat-sidebar__loading">
                   <div className="nat-sidebar__loading-spinner"></div>
                   <span>Loading...</span>
                 </div>
               ) : showChat ? (
-                <Chat pageContext={pageContext} />
+                showTutorial ? (
+                  <Tutorial onComplete={completeTutorial} />
+                ) : (
+                  <Chat pageContext={pageContext} />
+                )
               ) : (
                 <AuthScreen authState={authState} />
               )}
