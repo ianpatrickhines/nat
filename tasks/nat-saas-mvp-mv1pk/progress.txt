@@ -242,3 +242,25 @@ Started: 2025-01-12
 - Content script keyboard listeners need event.preventDefault() and event.stopPropagation() to prevent NB shortcuts from interfering
 - Playwright can test Chrome extensions using launch_persistent_context with --load-extension arg
 
+
+## 2025-01-12 - US-013: Chat UI component
+
+**Implementation:**
+- Created `extension/src/components/Chat.tsx` - Full chat component with Preact hooks
+- Message state management: messages array with id, role, content, timestamp, isStreaming, toolCalls, results
+- Text input at bottom with textarea (auto-height), Send button (disabled when empty), Cancel button (during streaming)
+- User messages right-aligned with purple background, assistant messages left-aligned with gray background
+- Animated typing indicator (3 bouncing dots) shown during streaming
+- Person results parsed from STREAMING_TOOL_RESULT events and displayed with name, city/state, "View Profile" link
+- Connected to background service worker via chrome.runtime.sendMessage (SUBMIT_QUERY, CANCEL_QUERY)
+- Listens for streaming events via chrome.runtime.onMessage (STREAMING_TEXT, STREAMING_TOOL_USE, STREAMING_TOOL_RESULT, STREAMING_ERROR, STREAMING_DONE)
+- Updated Sidebar.tsx to import and render Chat component with pageContext prop
+- Added 250+ lines of CSS in content.css for chat styles and animations
+
+**Learnings:**
+- Chrome extension testing requires persistent context with `--load-extension` flag - MCP Playwright browser doesn't support this
+- Preact hooks (useState, useEffect, useRef) work identically to React hooks
+- SSE streaming events need to be accumulated during streaming and finalized on STREAMING_DONE
+- Person results from tool calls need to be parsed from JSON strings in STREAMING_TOOL_RESULT events
+- CSS animations (keyframes) work well for typing indicator - bouncing dots pattern
+- textarea rows=1 with CSS max-height creates auto-growing input field effect
