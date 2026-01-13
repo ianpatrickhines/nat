@@ -296,6 +296,54 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*'
 
+  # Token Refresh Lambda (EventBridge triggered)
+  TokenRefreshFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'nat-token-refresh-${Environment}'
+      Runtime: python3.11
+      Handler: handler.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          # Placeholder - actual code deployed separately
+          def handler(event, context):
+              return {"statusCode": 200, "body": "OK"}
+      Timeout: 300
+      MemorySize: 256
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UsersTable
+          NB_CLIENT_ID_SECRET: !Sub 'nat/nb-client-id-${Environment}'
+          NB_CLIENT_SECRET_SECRET: !Sub 'nat/nb-client-secret-${Environment}'
+          TOKEN_EXPIRY_WINDOW_HOURS: '12'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
+  # EventBridge Rule to trigger Token Refresh every 12 hours
+  TokenRefreshScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub 'nat-token-refresh-schedule-${Environment}'
+      Description: Triggers token refresh Lambda every 12 hours
+      ScheduleExpression: 'rate(12 hours)'
+      State: ENABLED
+      Targets:
+        - Id: TokenRefreshTarget
+          Arn: !GetAtt TokenRefreshFunction.Arn
+
+  # Permission for EventBridge to invoke Token Refresh Lambda
+  TokenRefreshEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TokenRefreshFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt TokenRefreshScheduleRule.Arn
+
   # =============================================================================
   # API Gateway Resources - Stripe Webhook
   # =============================================================================
@@ -565,3 +613,15 @@ Outputs:
     Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/auth/nationbuilder/callback'
     Export:
       Name: !Sub '${AWS::StackName}-NBOAuthCallbackUrl'
+
+  TokenRefreshFunctionArn:
+    Description: ARN of the Token Refresh Lambda function
+    Value: !GetAtt TokenRefreshFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TokenRefreshFunctionArn'
+
+  TokenRefreshScheduleRuleArn:
+    Description: ARN of the EventBridge rule for token refresh
+    Value: !GetAtt TokenRefreshScheduleRule.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TokenRefreshScheduleRuleArn'
