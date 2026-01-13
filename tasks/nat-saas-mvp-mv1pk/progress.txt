@@ -284,3 +284,27 @@ Started: 2025-01-12
 - SVG icons inline in JSX work well for auth screens - no need for external icon library
 - Different subscription statuses (cancelled vs past_due vs unpaid) require different UX messaging
 - Placeholder URLs (STRIPE_CHECKOUT_URL, NB_CONNECT_URL) configured as constants for build-time replacement
+
+## 2025-01-12 - US-015: NB page context detection
+
+**Implementation:**
+- Created `extension/src/utils/pageContext.ts` with comprehensive page detection utilities
+- Person profile detection: `/admin/signups/{id}` - extracts ID from URL, name from DOM (page title, breadcrumbs, profile header)
+- List detection: `/admin/lists/{id}` and `/admin/signups?list_id={id}` - extracts list name from DOM
+- Event detection: `/admin/sites/{slug}/pages/events/{id}` - extracts event ID and name
+- Donation detection: `/admin/finance/donations/{id}` - extracts donation ID and amount from DOM
+- Dashboard detection: `/admin` or `/admin/dashboard`
+- `getContextDisplayText()` formats context for human-readable display
+- `watchForPageChanges()` hooks into History API (pushState/replaceState) and popstate for SPA navigation
+- Updated Sidebar component to display context in header with "Viewing: {context}" label
+- Updated content script to initialize context detection and pass context on navigation changes
+- Context passed with queries to backend via SUBMIT_QUERY message
+- Added CSS styling for context display (purple accent on light indigo background)
+
+**Learnings:**
+- Chrome extension testing with MCP Playwright isn't possible - requires persistent context with `--load-extension` flag
+- NationBuilder admin URLs follow patterns like `/admin/signups/{id}`, `/admin/lists/{id}`, `/admin/sites/{slug}/pages/events/{id}`
+- DOM extraction needs multiple fallback selectors since NB admin UI varies - try page title, breadcrumbs, profile headers
+- History API hooks (pushState/replaceState override) are the reliable way to detect SPA navigation
+- useImperativeHandle can expose multiple methods (toggle, isOpen, setPageContext) for parent component interaction
+- PageContext interface should be exported from utils module and imported in components to maintain single source of truth

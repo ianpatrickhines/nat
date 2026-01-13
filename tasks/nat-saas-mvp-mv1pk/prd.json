@@ -259,8 +259,9 @@
         "Typecheck passes"
       ],
       "priority": 15,
-      "passes": false,
-      "notes": "Depends on US-012. Parse URL patterns and DOM elements."
+      "passes": true,
+      "notes": "Depends on US-012. Parse URL patterns and DOM elements.",
+      "implementation": "extension/src/utils/pageContext.ts - New page context detection module with detectPageContext() for person profiles (/admin/signups/{id}), lists (/admin/lists/{id}, /admin/signups?list_id={id}), events (/admin/sites/{slug}/pages/events/{id}), and donations (/admin/finance/donations/{id}). Extracts names/IDs from URL patterns and DOM elements. getContextDisplayText() formats for display. watchForPageChanges() hooks into History API for SPA navigation. Sidebar shows context in header ('Viewing: {name}'). Context passed with SUBMIT_QUERY to backend. CSS styling in content.css."
     },
     {
       "id": "US-016",
