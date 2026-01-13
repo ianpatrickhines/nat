@@ -466,8 +466,9 @@
         "Typecheck passes"
       ],
       "priority": 27,
-      "passes": false,
-      "notes": "Depends on US-024, US-025, US-026. Use GitHub environments."
+      "passes": true,
+      "notes": "Depends on US-024, US-025, US-026. Use GitHub environments.",
+      "implementation": ".github/workflows/test.yml - Test workflow runs on PR/push: Python tests (pytest), mypy typecheck, cfn-lint CloudFormation validation, extension typecheck+build, site typecheck+build. Uploads artifacts. .github/workflows/deploy.yml - Deploy workflow: auto-deploys to staging on main merge, production requires manual approval via GitHub environment. Packages Lambda functions, deploys via CloudFormation, uploads code to S3. Creates GitHub release with extension artifact on main merge."
     }
   ]
 }

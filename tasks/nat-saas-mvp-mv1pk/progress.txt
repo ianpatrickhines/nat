@@ -640,3 +640,34 @@ Started: 2025-01-12
 - Test fixtures can inject auth state via chrome.storage.local before page navigation
 - Playwright's `or()` operator useful for testing states that may be brief (typing indicator vs response)
 - Fixed pre-existing test failures by mocking tenant_id and usage tracking functions
+
+## 2025-01-12 - US-027: GitHub Actions CI/CD pipeline
+
+**Implementation:**
+- Created `.github/workflows/test.yml` - Test workflow:
+  - Triggers on pull_request and push to main
+  - Python tests job: pytest, mypy typecheck, cfn-lint validation
+  - Extension job: npm ci, typecheck, build, upload artifact
+  - Site job: npm ci, typecheck, build, upload artifact
+  - Concurrency group to cancel in-progress runs
+- Created `.github/workflows/deploy.yml` - Deploy workflow:
+  - Triggers on push to main (auto-deploy staging) and workflow_dispatch (manual)
+  - Build job: builds extension and site, uploads artifacts
+  - deploy-staging job: auto-deploys on main merge
+    - Packages Lambda functions into zip files
+    - Deploys CloudFormation stack via AWS CLI
+    - Uploads Lambda code to S3, updates Lambda functions
+  - deploy-prod job: requires manual approval via GitHub environment
+    - Uses separate AWS credentials (AWS_ACCESS_KEY_ID_PROD)
+    - Same deployment steps as staging
+  - create-release job: creates GitHub release with extension zip
+- Lambda packaging includes: stripe_webhook, stripe_checkout, nb_oauth_callback, token_refresh, nat_agent (with shared + nat source), nat_agent_streaming (with shared + nat source)
+
+**Learnings:**
+- GitHub environments (staging, production) provide manual approval gates in the UI
+- workflow_dispatch with choice input allows selecting staging vs prod deployment
+- Lambda packaging needs to include shared modules and nat source code for agent functions
+- `|| true` after update-function-code prevents failure if function doesn't exist yet (first deploy)
+- softprops/action-gh-release@v1 is the standard way to create releases with artifacts
+- Concurrency groups prevent multiple deploys from racing (cancel-in-progress: false for deploy)
+- AWS_REGION as env variable is cleaner than repeating in each step
