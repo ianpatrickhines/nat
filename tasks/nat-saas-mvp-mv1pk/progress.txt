@@ -412,3 +412,33 @@ Started: 2025-01-12
 - Loading state should combine auth loading AND tutorial loading to avoid flicker
 - Conditional rendering order matters: loading → tutorial → chat ensures smooth UX
 
+## 2025-01-12 - US-020: Landing page with pricing
+
+**Implementation:**
+- Created `site/` directory with Vite + TypeScript build setup
+- `index.html` - Full landing page with semantic HTML sections:
+  - Hero: Value proposition headline, subtitle, CTAs, browser mockup showing Nat sidebar on NB
+  - Features: 6 cards (Natural Conversation, Full People Access, Smart Lists & Tags, Donation Tracking, Event Management, Safe & Secure)
+  - How It Works: 3-step flow (Subscribe & Install, Connect NB, Start Asking)
+  - Pricing: 3-tier cards (Starter $49/1/500, Team $149/5/2000, Organization $399/15/5000) + comparison table
+  - FAQ: 6 common questions with answers
+  - CTA: Final call to action section
+  - Footer: Product links, legal links, support contact
+- `src/styles.css` - 700+ lines CSS with:
+  - CSS variables for colors, shadows, typography
+  - Mobile-first responsive design with breakpoints at 1024px, 768px, 480px
+  - Feature card hover effects, pricing card featured state
+  - Typing indicator animation in browser mockup
+- `src/main.ts` - Minimal JavaScript for mobile menu toggle, smooth scrolling, intersection observer for active nav
+- Subscribe buttons link to placeholder Stripe URLs (`https://buy.stripe.com/starter`, etc.)
+- Updated `.gitignore` to exclude `node_modules/` and `.playwright-mcp/`
+
+**Learnings:**
+- Vite builds static sites extremely fast - 44ms for production build
+- Inter font from Google Fonts provides professional typography without custom font files
+- CSS `gradient-text` effect using background-clip works well for hero headlines
+- Intersection Observer API enables "active" state on nav links during scroll without scroll event listeners
+- Mobile menu toggle with hamburger animation is straightforward with CSS transitions
+- Feature comparison tables need `overflow-x: auto` wrapper for mobile scrolling
+- Browser mockup with CSS (no images) is lightweight and scales perfectly
+

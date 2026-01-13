@@ -350,8 +350,9 @@
         "Typecheck passes"
       ],
       "priority": 20,
-      "passes": false,
-      "notes": "New site/ directory. Static HTML/CSS or simple framework."
+      "passes": true,
+      "notes": "New site/ directory. Static HTML/CSS or simple framework.",
+      "implementation": "site/ directory with Vite + TypeScript. index.html landing page with: Hero (value prop + browser mockup), Features (6 cards: conversation, people, lists, donations, events, security), How It Works (3 steps), Pricing (3-tier cards + comparison table), FAQ (6 questions), CTA, Footer. CSS in src/styles.css with full mobile responsiveness (breakpoints at 1024px, 768px, 480px). Subscribe buttons link to placeholder Stripe URLs. Typecheck passes."
     },
     {
       "id": "US-021",
