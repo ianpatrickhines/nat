@@ -1,0 +1,1 @@
+"""Nat Agent Lambda handler."""

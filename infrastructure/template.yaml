@@ -501,6 +501,108 @@ Resources:
         gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
         gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Nat-User-Id,X-Nat-Tenant-Id'"
 
+  # =============================================================================
+  # Nat Agent Lambda
+  # =============================================================================
+
+  NatAgentFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'nat-agent-${Environment}'
+      Runtime: python3.11
+      Handler: handler.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          # Placeholder - actual code deployed separately
+          def handler(event, context):
+              return {"statusCode": 200, "body": "OK"}
+      Timeout: 120
+      MemorySize: 512
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UsersTable
+          ANTHROPIC_API_KEY_SECRET: !Sub 'nat/anthropic-api-key-${Environment}'
+          CLAUDE_MODEL: 'claude-haiku-4-5-20251001'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
+  # Permission for API Gateway to invoke Nat Agent Lambda
+  NatAgentLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref NatAgentFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*'
+
+  # =============================================================================
+  # API Gateway Resources - Nat Agent Query
+  # =============================================================================
+
+  # /agent resource
+  AgentResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: agent
+
+  # /agent/query resource
+  AgentQueryResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !Ref AgentResource
+      PathPart: query
+
+  # POST /agent/query method
+  AgentQueryMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref AgentQueryResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${NatAgentFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # OPTIONS /agent/query method for CORS
+  AgentQueryOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref AgentQueryResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Nat-User-Id,X-Nat-Tenant-Id'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: Empty
+
   # API Deployment
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
@@ -511,6 +613,8 @@ Resources:
       - StripeWebhookOptionsMethod
       - AuthNBCallbackMethod
       - AuthNBCallbackOptionsMethod
+      - AgentQueryMethod
+      - AgentQueryOptionsMethod
     Properties:
       RestApiId: !Ref ApiGateway
       Description: !Sub 'Deployment for ${Environment}'
@@ -625,3 +729,15 @@ Outputs:
     Value: !GetAtt TokenRefreshScheduleRule.Arn
     Export:
       Name: !Sub '${AWS::StackName}-TokenRefreshScheduleRuleArn'
+
+  NatAgentFunctionArn:
+    Description: ARN of the Nat Agent Lambda function
+    Value: !GetAtt NatAgentFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-NatAgentFunctionArn'
+
+  NatAgentQueryUrl:
+    Description: URL of the Nat Agent query endpoint
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/agent/query'
+    Export:
+      Name: !Sub '${AWS::StackName}-NatAgentQueryUrl'
