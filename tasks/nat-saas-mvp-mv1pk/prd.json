@@ -277,8 +277,9 @@
         "Typecheck passes"
       ],
       "priority": 16,
-      "passes": false,
-      "notes": "Depends on US-013. Backend tool responses include confirmation_required flag."
+      "passes": true,
+      "notes": "Depends on US-013. Backend tool responses include confirmation_required flag.",
+      "implementation": "Backend: Added SSE_EVENT_CONFIRMATION_REQUIRED and DESTRUCTIVE_TOOLS set (delete_signup, delete_contact, delete_donation, delete_event, delete_event_rsvp, delete_path_journey, remove_from_list, update_signup, update_donation, update_event) in nat_agent_streaming/handler.py. When agent calls destructive tool, sends confirmation_required event with tool_id, tool_name, tool_input, and human-readable summary. Client re-submits with confirmed_tools list to proceed. Extension: ConfirmationDialog.tsx component with icon (delete/warning/info), title, summary, warning message, and Cancel/Proceed buttons. Chat.tsx handles STREAMING_CONFIRMATION_REQUIRED event, shows dialog, and calls CONFIRM_ACTION or REJECT_ACTION. Background worker handles confirmation flow and re-submits query with confirmed tools."
     },
     {
       "id": "US-017",

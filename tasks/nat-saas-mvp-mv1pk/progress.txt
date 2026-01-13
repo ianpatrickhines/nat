@@ -308,3 +308,26 @@ Started: 2025-01-12
 - History API hooks (pushState/replaceState override) are the reliable way to detect SPA navigation
 - useImperativeHandle can expose multiple methods (toggle, isOpen, setPageContext) for parent component interaction
 - PageContext interface should be exported from utils module and imported in components to maintain single source of truth
+
+## 2025-01-12 - US-016: Confirmation dialogs
+
+**Implementation:**
+- Backend: Added SSE_EVENT_CONFIRMATION_REQUIRED event type in nat_agent_streaming/handler.py
+- Backend: DESTRUCTIVE_TOOLS set flags: delete_signup, delete_contact, delete_donation, delete_event, delete_event_rsvp, delete_path_journey, remove_from_list, update_signup, update_donation, update_event
+- Backend: generate_tool_summary() generates human-readable summaries like "Delete person record 12345"
+- Backend: confirmed_tools parameter in request body allows re-submitting with user approval
+- Extension: ConfirmationDialog.tsx component with icon (delete=red trash, warning=amber triangle, info=blue circle)
+- Extension: Dialog shows title, action summary, warning message, and Cancel/Proceed buttons
+- Extension: Chat.tsx handles STREAMING_CONFIRMATION_REQUIRED, shows dialog, waits for user response
+- Extension: Background worker manages confirmation state (pendingConfirmation, confirmedTools)
+- Extension: CONFIRM_ACTION adds toolId to confirmedTools and re-submits query
+- Extension: REJECT_ACTION broadcasts STREAMING_DONE with "Action cancelled" message
+- CSS: Overlay with fade-in animation, dialog with slide-up animation
+- Tests: Fixed missing tenant_id in test_nb_tokens_missing fixture
+
+**Learnings:**
+- Confirmation flow requires round-trip: backend sends confirmation_required → client shows dialog → client re-submits with confirmed_tools → backend executes
+- Tool ID uses hash of inputs to uniquely identify tool invocations even with same tool name
+- StreamingState needs to preserve currentQuery and currentContext for re-submission after confirmation
+- Modal overlay should capture clicks to close, but dialog click should not propagate
+- Escape key should cancel, Enter key should confirm
