@@ -187,8 +187,9 @@
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": false,
-      "notes": "Depends on US-010. Manifest V3 uses service workers, not background pages."
+      "passes": true,
+      "notes": "Depends on US-010. Manifest V3 uses service workers, not background pages.",
+      "implementation": "extension/src/background/index.ts - Full service worker with auth state management (AuthState type with token/userId/tenantId/nbConnected/nbNeedsReauth/subscriptionStatus) in chrome.storage.local. Message handling via chrome.runtime.onMessage for GET/SET/CLEAR_AUTH_STATE, SET_NB_CONNECTION, SET_SUBSCRIPTION_STATUS, SUBMIT_QUERY, CANCEL_QUERY, GET_STREAMING_STATE. SSE connection to Lambda streaming URL with proper event parsing (text/tool_use/tool_result/error/done). Broadcasts streaming events to all NationBuilder tabs via chrome.tabs.query/sendMessage. Keepalive alarm mechanism (chrome.alarms) to prevent MV3 service worker termination during streaming."
     },
     {
       "id": "US-012",

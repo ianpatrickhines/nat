@@ -201,3 +201,24 @@ Started: 2025-01-12
 - Preact with `jsxImportSource: "preact"` in tsconfig works seamlessly as React replacement
 - Extension can load without icons - Chrome uses default placeholder icon
 
+## 2025-01-12 - US-011: Background service worker
+
+**Implementation:**
+- Enhanced `extension/src/background/index.ts` with full service worker functionality
+- Auth state management: AuthState type with isAuthenticated, userId, tenantId, nbConnected, nbNeedsReauth, subscriptionStatus
+- Storage functions: getAuthState(), setAuthState(), clearAuthState(), setNbConnection(), setSubscriptionStatus()
+- Message handling: GET/SET/CLEAR_AUTH_STATE, SET_NB_CONNECTION, SET_SUBSCRIPTION_STATUS, SUBMIT_QUERY, CANCEL_QUERY, GET_STREAMING_STATE
+- SSE connection: parseSSEEvent() and processSSEStream() for Lambda Function URL streaming
+- Response broadcasting: broadcastToNbTabs() to all *.nationbuilder.com tabs
+- Keepalive: chrome.alarms to prevent MV3 service worker termination during streaming
+- Added `alarms` permission to manifest.json
+
+**Learnings:**
+- Manifest V3 service workers are ephemeral - they can be killed at any time. Use chrome.alarms as a keepalive mechanism during long-running operations like SSE streaming
+- chrome.tabs.query() with url pattern returns all matching tabs; use try/catch when sending messages as content script may not be loaded
+- SSE events are separated by double newlines (`\n\n`) - need to buffer and split properly
+- chrome.storage.onChanged listener allows syncing auth state changes across tabs automatically
+- Service workers don't have persistent state - use chrome.storage.local for anything that needs to survive restarts
+- AbortController works in service workers for cancelling fetch requests
+- ReadableStreamDefaultReader with TextDecoder handles chunked SSE responses properly
+
