@@ -35,10 +35,10 @@ STRIPE_WEBHOOK_SECRET_NAME = os.environ.get(
 
 # NEW PRICING MODEL: Nation-level plans
 # Nat: $29/mo, 500 queries/month
-# Nat Pro: $79/mo, unlimited queries
+# Nat Pro: $79/mo, unlimited queries (represented as 0 for unlimited)
 PLAN_QUERY_LIMITS: dict[str, int] = {
     "nat": 500,
-    "nat_pro": 999999,  # Effectively unlimited
+    "nat_pro": 0,  # 0 = unlimited (checked explicitly in middleware)
     # Legacy plans (backwards compatibility)
     "starter": 500,
     "team": 2000,
@@ -185,8 +185,9 @@ def handle_checkout_completed(session: dict[str, Any]) -> None:
 
     if not nation_slug:
         logger.error(f"No nation_slug in metadata for customer {customer_id}")
-        # Can't proceed without nation_slug - this is critical for the new model
-        return
+        # This is critical - we cannot proceed without nation_slug
+        # In production, consider alerting on this error
+        raise ValueError(f"Missing nation_slug in checkout metadata for customer {customer_id}")
 
     # If subscription exists, we'll get more details from subscription.updated
     # For now, create the nation with basic info
@@ -228,11 +229,11 @@ def handle_checkout_completed(session: dict[str, Any]) -> None:
                 "nation_slug": nation_slug,
                 "stripe_customer_id": customer_id,
                 "stripe_subscription_id": subscription_id or "",
-                "subscription_status": "active",
-                "subscription_plan": plan,
+                "subscription_status": "trialing",  # Start as trialing until confirmed
+                "subscription_plan": "trial",  # Trial plan until Stripe confirms
                 "admin_email": customer_email or "",
                 "queries_used_this_period": 0,
-                "queries_limit": PLAN_QUERY_LIMITS.get(plan, 500),
+                "queries_limit": 50,  # Limited trial queries
                 "billing_period_start": now[:10],  # YYYY-MM-DD
                 "created_at": now,
                 "updated_at": now,

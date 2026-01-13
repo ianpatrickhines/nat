@@ -19,8 +19,8 @@ from botocore.exceptions import ClientError
 from src.lambdas.shared.usage_tracking import (
     RateLimitError,
     check_rate_limit,
-    track_query_usage,
-    check_and_reset_billing_cycle,
+    track_query_usage_nation,
+    check_and_reset_billing_cycle_nation,
 )
 
 logger = logging.getLogger()
@@ -481,12 +481,6 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
         return
 
     logger.info(f"Processing streaming query for nation {nation_slug}, user {user_id}: {query[:100]}...")
-
-    # Import nation-based tracking functions
-    from src.lambdas.shared.usage_tracking import (
-        check_and_reset_billing_cycle_nation,
-        track_query_usage_nation,
-    )
 
     # Check if billing cycle has reset for this nation
     check_and_reset_billing_cycle_nation(nation_slug)

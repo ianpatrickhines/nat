@@ -240,14 +240,14 @@ def update_nation_nb_status(
             )
             logger.info(f"Updated NB connection status for nation {nation_slug}")
         else:
-            # Create new nation record
+            # Create new nation record with trial status
             nation_item: dict[str, Any] = {
                 "nation_slug": nation_slug,
                 "nb_connected": nb_connected,
                 "nb_token_expires_at": expires_at_iso,
                 "nb_needs_reauth": False,
-                "subscription_plan": "trial",  # Default to trial, updated by Stripe webhook
-                "subscription_status": "none",
+                "subscription_plan": "trial",  # Default trial until Stripe subscription created
+                "subscription_status": "trialing",  # Trialing status matches plan
                 "queries_used_this_period": 0,
                 "queries_limit": 50,  # Limited trial queries
                 "created_at": now,

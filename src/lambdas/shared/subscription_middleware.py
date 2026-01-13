@@ -198,7 +198,7 @@ def verify_nation_subscription(
             http_status=402,
         )
 
-    # Check query limit (skip if unlimited plan like nat_pro)
+    # Check query limit (0 means unlimited, skip check)
     if queries_limit > 0 and queries_used >= queries_limit:
         raise SubscriptionError(
             code=SubscriptionErrorCode.QUERY_LIMIT_EXCEEDED,

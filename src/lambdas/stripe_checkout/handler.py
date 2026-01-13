@@ -159,7 +159,7 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
 
         plan = body.get("plan", "").lower()
         nation_slug = body.get("nation_slug", "")
-        
+
         if not plan:
             return {
                 "statusCode": 400,
