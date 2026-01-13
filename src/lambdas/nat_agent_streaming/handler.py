@@ -190,13 +190,67 @@ def generate_tool_summary(tool_name: str, tool_input: dict[str, Any]) -> str:
     return f"Execute {tool_name}"
 
 
+def _get_undo_instruction(
+    undo_type: str,
+    undo_data: dict[str, Any],
+    original_tool_name: str
+) -> str:
+    """
+    Generate a human-readable instruction for how to undo an action.
+
+    Args:
+        undo_type: The type of undo operation
+        undo_data: Data needed to perform the undo
+        original_tool_name: The original tool that was called
+
+    Returns:
+        Human-readable instruction for the agent
+    """
+    if undo_type == "delete_created":
+        if original_tool_name == "create_signup" and undo_data.get("signup_id"):
+            return f"call delete_signup with id={undo_data['signup_id']}"
+        if original_tool_name == "create_contact" and undo_data.get("contact_id"):
+            return f"call delete_contact with id={undo_data['contact_id']}"
+        if original_tool_name == "create_donation" and undo_data.get("donation_id"):
+            return f"call delete_donation with id={undo_data['donation_id']}"
+        if original_tool_name == "create_event_rsvp" and undo_data.get("rsvp_id"):
+            return f"call delete_event_rsvp with id={undo_data['rsvp_id']}"
+
+    elif undo_type == "remove_from_list":
+        person_id = undo_data.get("person_id")
+        list_id = undo_data.get("list_id")
+        if person_id and list_id:
+            return f"call remove_from_list with person_id={person_id}, list_id={list_id}"
+
+    elif undo_type == "add_to_list":
+        person_id = undo_data.get("person_id")
+        list_id = undo_data.get("list_id")
+        if person_id and list_id:
+            return f"call add_to_list with person_id={person_id}, list_id={list_id}"
+
+    elif undo_type == "remove_tag":
+        signup_id = undo_data.get("signup_id")
+        tagging_id = undo_data.get("tagging_id")
+        if signup_id and tagging_id:
+            return f"call remove_signup_tagging with signup_id={signup_id}, id={tagging_id}"
+
+    elif undo_type == "add_tag":
+        signup_id = undo_data.get("signup_id")
+        tag_name = undo_data.get("tag_name")
+        if signup_id and tag_name:
+            return f"call add_signup_tagging with signup_id={signup_id}, tag_name={tag_name}"
+
+    return "This action cannot be undone"
+
+
 async def stream_agent_response(
     query: str,
     nb_slug: str,
     nb_token: str,
     model: str,
     context: dict[str, Any] | None = None,
-    confirmed_tools: set[str] | None = None
+    confirmed_tools: set[str] | None = None,
+    undo_stack: list[dict[str, Any]] | None = None
 ) -> AsyncGenerator[str, None]:
     """
     Stream responses from the Nat agent as SSE events.
@@ -208,6 +262,7 @@ async def stream_agent_response(
         model: Claude model to use
         context: Optional page context from extension
         confirmed_tools: Set of tool_id values that have been confirmed by user
+        undo_stack: List of recent undoable actions from this session
 
     Yields:
         SSE formatted strings
@@ -226,6 +281,8 @@ async def stream_agent_response(
 
     # Build the full prompt with context if provided
     full_prompt = query
+    context_sections: list[str] = []
+
     if context:
         context_parts = []
         if context.get("page_type"):
@@ -240,7 +297,37 @@ async def stream_agent_response(
             context_parts.append(f"Viewing event: {context['event_name']}")
 
         if context_parts:
-            full_prompt = f"[Context: {', '.join(context_parts)}]\n\n{query}"
+            context_sections.append(f"[Context: {', '.join(context_parts)}]")
+
+    # Add undo stack context if the user might be asking to undo
+    # Check for common undo phrases
+    query_lower = query.lower()
+    undo_phrases = ["undo", "revert", "reverse", "take back", "cancel that", "nevermind"]
+    is_undo_request = any(phrase in query_lower for phrase in undo_phrases)
+
+    if is_undo_request and undo_stack and len(undo_stack) > 0:
+        # Build undo context from the most recent actions (up to 5)
+        recent_actions = undo_stack[-5:]
+        undo_context_parts = [
+            "[Recent Actions (can be undone):"
+        ]
+        for i, action in enumerate(reversed(recent_actions)):
+            desc = action.get("description", "Unknown action")
+            tool_name = action.get("toolName", "unknown")
+            undo_type = action.get("undoType", "not_undoable")
+            undo_data = action.get("undoData", {})
+
+            # Generate the undo instruction based on undo type
+            undo_instruction = _get_undo_instruction(undo_type, undo_data, tool_name)
+            undo_context_parts.append(
+                f"  {i + 1}. {desc} - To undo: {undo_instruction}"
+            )
+
+        undo_context_parts.append("]")
+        context_sections.append("\n".join(undo_context_parts))
+
+    if context_sections:
+        full_prompt = "\n\n".join(context_sections) + "\n\n" + query
 
     options = create_nat_options(nb_slug, nb_token, model)
     full_response: list[str] = []
@@ -323,6 +410,7 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
     page_context = body.get("context", {})
     confirmed_tools_list: list[str] = body.get("confirmed_tools", [])
     confirmed_tools = set(confirmed_tools_list) if confirmed_tools_list else set()
+    undo_stack: list[dict[str, Any]] = body.get("undo_stack", [])
 
     if not query:
         yield format_sse_event(SSE_EVENT_ERROR, {
@@ -406,6 +494,7 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
         model=CLAUDE_MODEL,
         context=page_context,
         confirmed_tools=confirmed_tools,
+        undo_stack=undo_stack,
     ):
         yield event
         # Check if this is a successful done event (no error in response)

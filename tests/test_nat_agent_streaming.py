@@ -18,6 +18,7 @@ from src.lambdas.nat_agent_streaming.handler import (
     get_user_info,
     handler,
     process_streaming_request,
+    _get_undo_instruction,
     SSE_EVENT_TEXT,
     SSE_EVENT_TOOL_USE,
     SSE_EVENT_TOOL_RESULT,
@@ -489,3 +490,97 @@ class TestSseEventTypes:
         assert SSE_EVENT_TOOL_RESULT == "tool_result"
         assert SSE_EVENT_ERROR == "error"
         assert SSE_EVENT_DONE == "done"
+
+
+class TestUndoFunctionality:
+    """Tests for session undo functionality."""
+
+    def test_get_undo_instruction_delete_created_signup(self) -> None:
+        """Test undo instruction for created signup."""
+        result = _get_undo_instruction(
+            undo_type="delete_created",
+            undo_data={"signup_id": "12345"},
+            original_tool_name="create_signup"
+        )
+        assert result == "call delete_signup with id=12345"
+
+    def test_get_undo_instruction_delete_created_contact(self) -> None:
+        """Test undo instruction for created contact."""
+        result = _get_undo_instruction(
+            undo_type="delete_created",
+            undo_data={"contact_id": "67890"},
+            original_tool_name="create_contact"
+        )
+        assert result == "call delete_contact with id=67890"
+
+    def test_get_undo_instruction_delete_created_donation(self) -> None:
+        """Test undo instruction for created donation."""
+        result = _get_undo_instruction(
+            undo_type="delete_created",
+            undo_data={"donation_id": "don123"},
+            original_tool_name="create_donation"
+        )
+        assert result == "call delete_donation with id=don123"
+
+    def test_get_undo_instruction_delete_created_rsvp(self) -> None:
+        """Test undo instruction for created event RSVP."""
+        result = _get_undo_instruction(
+            undo_type="delete_created",
+            undo_data={"rsvp_id": "rsvp456"},
+            original_tool_name="create_event_rsvp"
+        )
+        assert result == "call delete_event_rsvp with id=rsvp456"
+
+    def test_get_undo_instruction_remove_from_list(self) -> None:
+        """Test undo instruction for add_to_list (reverse is remove)."""
+        result = _get_undo_instruction(
+            undo_type="remove_from_list",
+            undo_data={"person_id": "p123", "list_id": "l456"},
+            original_tool_name="add_to_list"
+        )
+        assert result == "call remove_from_list with person_id=p123, list_id=l456"
+
+    def test_get_undo_instruction_add_to_list(self) -> None:
+        """Test undo instruction for remove_from_list (reverse is add back)."""
+        result = _get_undo_instruction(
+            undo_type="add_to_list",
+            undo_data={"person_id": "p123", "list_id": "l456"},
+            original_tool_name="remove_from_list"
+        )
+        assert result == "call add_to_list with person_id=p123, list_id=l456"
+
+    def test_get_undo_instruction_remove_tag(self) -> None:
+        """Test undo instruction for added tag (reverse is remove)."""
+        result = _get_undo_instruction(
+            undo_type="remove_tag",
+            undo_data={"signup_id": "s123", "tagging_id": "t456"},
+            original_tool_name="add_signup_tagging"
+        )
+        assert result == "call remove_signup_tagging with signup_id=s123, id=t456"
+
+    def test_get_undo_instruction_add_tag(self) -> None:
+        """Test undo instruction for removed tag (reverse is add back)."""
+        result = _get_undo_instruction(
+            undo_type="add_tag",
+            undo_data={"signup_id": "s123", "tag_name": "volunteer"},
+            original_tool_name="remove_signup_tagging"
+        )
+        assert result == "call add_signup_tagging with signup_id=s123, tag_name=volunteer"
+
+    def test_get_undo_instruction_not_undoable(self) -> None:
+        """Test undo instruction for non-undoable action."""
+        result = _get_undo_instruction(
+            undo_type="not_undoable",
+            undo_data={},
+            original_tool_name="update_signup"
+        )
+        assert result == "This action cannot be undone"
+
+    def test_get_undo_instruction_missing_data(self) -> None:
+        """Test undo instruction with missing data returns not undoable."""
+        result = _get_undo_instruction(
+            undo_type="delete_created",
+            undo_data={},  # Missing signup_id
+            original_tool_name="create_signup"
+        )
+        assert result == "This action cannot be undone"

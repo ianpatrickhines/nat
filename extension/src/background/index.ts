@@ -25,6 +25,7 @@ interface PageContext {
 interface QueryRequest {
   query: string;
   context?: PageContext;
+  undoStack?: UndoableAction[];
 }
 
 interface SSEEvent {
@@ -48,6 +49,17 @@ interface StreamingState {
   pendingConfirmation: ConfirmationRequest | null;
 }
 
+// Undo stack types (mirrors extension/src/utils/undoStack.ts)
+interface UndoableAction {
+  id: string;
+  timestamp: number;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  description: string;
+  undoType: string;
+  undoData: Record<string, unknown>;
+}
+
 // Message types from content scripts
 type MessageType =
   | { type: 'GET_AUTH_STATE' }
@@ -55,11 +67,12 @@ type MessageType =
   | { type: 'CLEAR_AUTH_STATE' }
   | { type: 'SET_NB_CONNECTION'; nbConnected: boolean; nbNeedsReauth?: boolean }
   | { type: 'SET_SUBSCRIPTION_STATUS'; status: AuthState['subscriptionStatus'] }
-  | { type: 'SUBMIT_QUERY'; query: string; context?: PageContext }
+  | { type: 'SUBMIT_QUERY'; query: string; context?: PageContext; undoStack?: UndoableAction[] }
   | { type: 'CANCEL_QUERY' }
   | { type: 'GET_STREAMING_STATE' }
   | { type: 'CONFIRM_ACTION'; toolId: string }
-  | { type: 'REJECT_ACTION' };
+  | { type: 'REJECT_ACTION' }
+  | { type: 'GET_UNDO_STACK' };
 
 // Confirmation request info
 interface ConfirmationRequest {
@@ -76,8 +89,9 @@ type BroadcastMessage =
   | { type: 'STREAMING_TOOL_USE'; name: string; input: Record<string, unknown> }
   | { type: 'STREAMING_TOOL_RESULT'; result: string; isError: boolean }
   | { type: 'STREAMING_ERROR'; error: string; errorCode: string; retryAfter?: number }
-  | { type: 'STREAMING_DONE'; response: string; toolCalls: ToolCallInfo[] }
+  | { type: 'STREAMING_DONE'; response: string; toolCalls: ToolCallInfo[]; toolResults?: Record<string, unknown>[] }
   | { type: 'STREAMING_CONFIRMATION_REQUIRED'; confirmation: ConfirmationRequest }
+  | { type: 'STREAMING_UNDO_COMPLETE'; action: UndoableAction; description: string }
   | { type: 'TOGGLE_SIDEBAR' };
 
 // ============================================================================
@@ -459,6 +473,7 @@ async function submitQuery(request: QueryRequest): Promise<{ success: boolean; e
         user_id: authState.userId,
         context: request.context || {},
         confirmed_tools: streamingState.confirmedTools,
+        undo_stack: request.undoStack || [],
       }),
       signal: streamingState.abortController.signal,
     });
@@ -629,7 +644,11 @@ chrome.runtime.onMessage.addListener((
     }
 
     case 'SUBMIT_QUERY': {
-      submitQuery({ query: message.query, context: message.context })
+      submitQuery({
+        query: message.query,
+        context: message.context,
+        undoStack: message.undoStack,
+      })
         .then((result) => sendResponse(result));
       return true;
     }

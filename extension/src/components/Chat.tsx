@@ -1,6 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import { PageContext } from '../utils/pageContext';
 import { ConfirmationDialog, ConfirmationRequest } from './ConfirmationDialog';
+import {
+  recordAction,
+  popLastAction,
+  getUndoStack,
+  isUndoableToolName,
+  UndoableAction,
+} from '../utils/undoStack';
 
 // ============================================================================
 // Types
@@ -41,8 +48,9 @@ type BroadcastMessage =
   | { type: 'STREAMING_TOOL_USE'; name: string; input: Record<string, unknown> }
   | { type: 'STREAMING_TOOL_RESULT'; result: string; isError: boolean }
   | { type: 'STREAMING_ERROR'; error: string; errorCode: string; retryAfter?: number }
-  | { type: 'STREAMING_DONE'; response: string; toolCalls: ToolCallInfo[] }
+  | { type: 'STREAMING_DONE'; response: string; toolCalls: ToolCallInfo[]; toolResults?: Record<string, unknown>[] }
   | { type: 'STREAMING_CONFIRMATION_REQUIRED'; confirmation: ConfirmationRequest }
+  | { type: 'STREAMING_UNDO_COMPLETE'; action: UndoableAction; description: string }
   | { type: 'AUTH_STATE_CHANGED' }
   | { type: 'TOGGLE_SIDEBAR' };
 
@@ -197,6 +205,17 @@ export function Chat({ pageContext }: ChatProps) {
             )
           );
 
+          // Record undoable actions for the undo stack
+          // Tool results may be passed from backend for recording undo data
+          if (message.toolCalls && message.toolCalls.length > 0) {
+            const toolResults = message.toolResults || [];
+            message.toolCalls.forEach((tc, idx) => {
+              if (isUndoableToolName(tc.name)) {
+                recordAction(tc.name, tc.input, toolResults[idx]);
+              }
+            });
+          }
+
           // Clean up
           if (streamingMessageId) {
             toolResultsRef.current.delete(streamingMessageId);
@@ -221,6 +240,13 @@ export function Chat({ pageContext }: ChatProps) {
                 : msg
             )
           );
+          break;
+        }
+
+        case 'STREAMING_UNDO_COMPLETE': {
+          // An undo operation completed - remove the action from the stack
+          popLastAction();
+          // The response text will come through STREAMING_DONE
           break;
         }
       }
@@ -261,12 +287,14 @@ export function Chat({ pageContext }: ChatProps) {
     setIsStreaming(true);
     setStreamingMessageId(assistantMessageId);
 
-    // Send to background service worker with page context
+    // Send to background service worker with page context and undo stack
+    // The undo stack is passed so the backend can detect "undo" queries
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'SUBMIT_QUERY',
         query: query.trim(),
         context: pageContext || undefined,
+        undoStack: getUndoStack(),
       });
 
       if (!response.success) {
