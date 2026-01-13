@@ -367,8 +367,9 @@
         "Typecheck passes"
       ],
       "priority": 21,
-      "passes": false,
-      "notes": "Depends on US-020. Use Stripe Checkout Sessions API."
+      "passes": true,
+      "notes": "Depends on US-020. Use Stripe Checkout Sessions API.",
+      "implementation": "src/lambdas/stripe_checkout/handler.py - Lambda handler creates Stripe Checkout sessions via Stripe API (urllib3). Supports starter/team/organization plans with configurable price IDs. Returns checkout_url and session_id. Success URL includes {CHECKOUT_SESSION_ID} placeholder for verification. CloudFormation adds Lambda + POST /stripe/checkout endpoint with CORS. Landing page JS (site/src/main.ts) calls API on button click, shows loading spinner, redirects to Stripe Checkout URL. 22 unit tests in tests/test_stripe_checkout.py."
     },
     {
       "id": "US-022",

@@ -442,3 +442,30 @@ Started: 2025-01-12
 - Feature comparison tables need `overflow-x: auto` wrapper for mobile scrolling
 - Browser mockup with CSS (no images) is lightweight and scales perfectly
 
+## 2025-01-12 - US-021: Stripe Checkout integration
+
+**Implementation:**
+- Created `src/lambdas/stripe_checkout/handler.py` - Lambda handler for creating Stripe Checkout sessions
+- Uses Stripe Checkout Sessions API via urllib3 (minimal dependencies)
+- Supports all three plans: starter ($49), team ($149), organization ($399)
+- Price IDs configurable via environment variables (STRIPE_PRICE_STARTER, STRIPE_PRICE_TEAM, STRIPE_PRICE_ORG)
+- Success URL includes `{CHECKOUT_SESSION_ID}` placeholder for verification
+- Cancel URL returns to pricing page
+- CloudFormation: Lambda function + POST /stripe/checkout endpoint with CORS
+- Updated landing page (`site/src/main.ts`):
+  - Subscribe buttons converted from anchor tags to button elements
+  - JavaScript calls checkout API on click
+  - Loading state with spinner animation while waiting
+  - Redirects to Stripe Checkout URL on success
+- Added button loading CSS states (opacity, spinner animation)
+- Added `vite/client` types to site tsconfig for import.meta.env support
+- 22 unit tests in `tests/test_stripe_checkout.py`
+
+**Learnings:**
+- Stripe Checkout Sessions API expects form-encoded POST body, not JSON
+- `{CHECKOUT_SESSION_ID}` is a Stripe template variable replaced at checkout time, not a CloudFormation variable
+- urllib3 imported inside function to avoid cold start overhead when not needed
+- Lambda URL CORS config supports OPTIONS method even though cfn-lint complains (false positive)
+- Button disabled + loading class pattern works well for async operations
+- import.meta.env requires Vite client types in TypeScript config
+
