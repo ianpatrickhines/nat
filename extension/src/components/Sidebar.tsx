@@ -1,17 +1,27 @@
 import { useState, useImperativeHandle, forwardRef } from 'preact/compat';
+import { Chat } from './Chat';
 
 export interface SidebarHandle {
   toggle: () => void;
   isOpen: () => boolean;
 }
 
+interface PageContext {
+  page_type?: string;
+  person_name?: string;
+  person_id?: string;
+  list_name?: string;
+  event_name?: string;
+}
+
 interface SidebarProps {
   initialOpen?: boolean;
   onToggle?: (isOpen: boolean) => void;
+  pageContext?: PageContext;
 }
 
 export const Sidebar = forwardRef<SidebarHandle, SidebarProps>(
-  function Sidebar({ initialOpen = true, onToggle }, ref) {
+  function Sidebar({ initialOpen = true, onToggle, pageContext }, ref) {
     const [isOpen, setIsOpen] = useState(initialOpen);
 
     const toggleSidebar = () => {
@@ -45,9 +55,7 @@ export const Sidebar = forwardRef<SidebarHandle, SidebarProps>(
             </header>
 
             <main className="nat-sidebar__main">
-              <p className="nat-sidebar__placeholder">
-                Extension loaded successfully. Chat UI coming soon.
-              </p>
+              <Chat pageContext={pageContext} />
             </main>
           </div>
         ) : (
