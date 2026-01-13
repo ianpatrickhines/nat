@@ -226,30 +226,322 @@ Each customer (NationBuilder nation) is a tenant:
 
 ## Authentication Flow
 
+### Overview
+
+Nat requires two layers of authentication:
+1. **User auth** - Cognito JWT for API access (who is making the request)
+2. **NationBuilder auth** - OAuth2 tokens for NB API access (what nation to access)
+
 ### Initial Setup (Onboarding)
 
 ```
-1. User signs up at nat.nationbuilder.tools
-2. Stripe Checkout → creates subscription
-3. Redirect to NationBuilder OAuth
-4. User authorizes Nat to access their nation
-5. We store encrypted NB token in Secrets Manager
-6. User installs Chrome Extension
-7. Extension authenticates via Cognito
-8. Ready to use
+┌─────────┐     ┌─────────┐     ┌─────────┐     ┌─────────┐     ┌─────────┐
+│  User   │     │   Nat   │     │ Stripe  │     │   NB    │     │   Nat   │
+│         │     │  Site   │     │Checkout │     │  OAuth  │     │ Backend │
+└────┬────┘     └────┬────┘     └────┬────┘     └────┬────┘     └────┬────┘
+     │               │               │               │               │
+     │  1. Sign up   │               │               │               │
+     │──────────────>│               │               │               │
+     │               │               │               │               │
+     │  2. Redirect  │               │               │               │
+     │<──────────────│               │               │               │
+     │               │               │               │               │
+     │  3. Pay       │               │               │               │
+     │──────────────────────────────>│               │               │
+     │               │               │               │               │
+     │  4. Success + redirect        │               │               │
+     │<──────────────────────────────│               │               │
+     │               │               │               │               │
+     │  5. Redirect to NB OAuth      │               │               │
+     │───────────────────────────────────────────────>│               │
+     │               │               │               │               │
+     │  6. Authorize Nat             │               │               │
+     │<──────────────────────────────────────────────│               │
+     │               │               │               │               │
+     │  7. Callback with code        │               │               │
+     │──────────────────────────────────────────────────────────────>│
+     │               │               │               │               │
+     │               │               │  8. Exchange code for tokens  │
+     │               │               │               │<──────────────│
+     │               │               │               │               │
+     │               │               │  9. Return tokens             │
+     │               │               │               │──────────────>│
+     │               │               │               │               │
+     │  10. Success! Install extension               │               │
+     │<──────────────────────────────────────────────────────────────│
+     │               │               │               │               │
 ```
+
+### NationBuilder OAuth2 Flow (V2 API)
+
+NationBuilder uses standard OAuth2 authorization code flow with refresh tokens.
+
+#### Step 1: Authorization Request
+
+Redirect user to NationBuilder authorization page:
+
+```
+GET https://{slug}.nationbuilder.com/oauth/authorize
+    ?response_type=code
+    &client_id={client_id}
+    &redirect_uri={callback_url}
+    &state={tenant_id}
+```
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `response_type` | `code` | Always "code" for auth code flow |
+| `client_id` | From NB app registration | Register at Settings > Developer > Apps |
+| `redirect_uri` | `https://api.nat.../oauth/callback` | Must be pre-registered in NB |
+| `state` | `{tenant_id}` | Pass tenant ID through OAuth flow |
+
+#### Step 2: User Authorization
+
+User sees NationBuilder consent screen:
+- "Nat wants to access your nation"
+- User must be admin to authorize
+- On approval, NB redirects to callback with auth code
+
+#### Step 3: Token Exchange
+
+```
+POST https://{slug}.nationbuilder.com/oauth/token
+Content-Type: application/json
+
+{
+    "grant_type": "authorization_code",
+    "code": "{auth_code}",
+    "client_id": "{client_id}",
+    "client_secret": "{client_secret}",
+    "redirect_uri": "{callback_url}"
+}
+```
+
+#### Step 4: Token Response
+
+```json
+{
+    "access_token": "abc123...",
+    "refresh_token": "def456...",
+    "token_type": "bearer",
+    "expires_in": 86400,
+    "created_at": 1736700000,
+    "scope": "default"
+}
+```
+
+**Important:** V2 API tokens expire in **24 hours** (86400 seconds).
+
+#### Step 5: Token Refresh
+
+V2 tokens must be refreshed before expiration. Refresh tokens are **single-use** (revoked after use).
+
+```
+POST https://{slug}.nationbuilder.com/oauth/token
+Content-Type: application/json
+
+{
+    "grant_type": "refresh_token",
+    "refresh_token": "{refresh_token}",
+    "client_id": "{client_id}",
+    "client_secret": "{client_secret}"
+}
+```
+
+Response includes new `access_token` and `refresh_token`.
+
+### OAuth Callback Handler (Lambda)
+
+Based on existing pattern from `conduitstreetservices/shared/auth/nationbuilder-oauth-callback/`:
+
+```python
+# /oauth/callback Lambda handler
+def lambda_handler(event, context):
+    # 1. Extract code and tenant_id from callback
+    code = event['queryStringParameters']['code']
+    tenant_id = event['queryStringParameters']['state']
+
+    # 2. Look up tenant to get nation slug
+    tenant = dynamodb.get_item(Key={'tenant_id': tenant_id})
+    nation_slug = tenant['nationbuilder_slug']
+
+    # 3. Exchange code for tokens
+    tokens = exchange_code_for_tokens(
+        slug=nation_slug,
+        code=code,
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+        redirect_uri=CALLBACK_URL
+    )
+
+    # 4. Store tokens in Secrets Manager
+    secrets_manager.put_secret_value(
+        SecretId=f"nat/tenant/{tenant_id}/nb-tokens",
+        SecretString=json.dumps({
+            'access_token': tokens['access_token'],
+            'refresh_token': tokens['refresh_token'],
+            'expires_at': tokens['created_at'] + tokens['expires_in']
+        })
+    )
+
+    # 5. Update tenant record
+    dynamodb.update_item(
+        Key={'tenant_id': tenant_id},
+        UpdateExpression='SET nb_connected = :true, nb_connected_at = :now',
+        ExpressionAttributeValues={':true': True, ':now': now()}
+    )
+
+    # 6. Redirect to success page
+    return redirect('https://nat.../setup/success')
+```
+
+### Token Refresh Service
+
+Background Lambda runs every 12 hours to proactively refresh expiring tokens:
+
+```python
+# EventBridge: rate(12 hours) → Lambda
+def refresh_expiring_tokens(event, context):
+    # Find tokens expiring in next 12 hours
+    expiring_soon = now() + timedelta(hours=12)
+
+    tenants = dynamodb.scan(
+        FilterExpression='nb_token_expires_at < :soon',
+        ExpressionAttributeValues={':soon': expiring_soon.timestamp()}
+    )
+
+    for tenant in tenants['Items']:
+        try:
+            # Get current tokens from Secrets Manager
+            secret = secrets_manager.get_secret_value(
+                SecretId=f"nat/tenant/{tenant['tenant_id']}/nb-tokens"
+            )
+            tokens = json.loads(secret['SecretString'])
+
+            # Refresh the token
+            new_tokens = refresh_nb_token(
+                slug=tenant['nationbuilder_slug'],
+                refresh_token=tokens['refresh_token']
+            )
+
+            # Store new tokens
+            secrets_manager.put_secret_value(
+                SecretId=f"nat/tenant/{tenant['tenant_id']}/nb-tokens",
+                SecretString=json.dumps(new_tokens)
+            )
+
+            # Update expiry in DynamoDB for querying
+            dynamodb.update_item(
+                Key={'tenant_id': tenant['tenant_id']},
+                UpdateExpression='SET nb_token_expires_at = :exp',
+                ExpressionAttributeValues={':exp': new_tokens['expires_at']}
+            )
+
+        except Exception as e:
+            # Token refresh failed - mark tenant for re-auth
+            dynamodb.update_item(
+                Key={'tenant_id': tenant['tenant_id']},
+                UpdateExpression='SET nb_needs_reauth = :true',
+                ExpressionAttributeValues={':true': True}
+            )
+            # Notify user via email/Slack
+            notify_reauth_required(tenant)
+```
+
+### Re-Authorization Flow
+
+When token refresh fails (user revoked access, etc.):
+
+1. Set `nb_needs_reauth = true` in tenant record
+2. Chrome Extension checks this flag on each request
+3. Show banner: "Nat lost access to your NationBuilder. [Reconnect]"
+4. User clicks → redirect to NB OAuth flow again
+5. On success, clear `nb_needs_reauth` flag
 
 ### Per-Request Auth
 
 ```
-1. Chrome Extension sends request with Cognito JWT
-2. API Gateway validates JWT
-3. Lambda/ECS looks up tenant by user_id
-4. Retrieves NB token from Secrets Manager
-5. Initializes Nat agent with tenant's credentials
-6. Processes request, returns response
-7. Increments usage counter in DynamoDB
+┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+│  Chrome  │     │   API    │     │  Lambda  │     │ Secrets  │     │    NB    │
+│Extension │     │ Gateway  │     │  / ECS   │     │ Manager  │     │   API    │
+└────┬─────┘     └────┬─────┘     └────┬─────┘     └────┬─────┘     └────┬─────┘
+     │                │                │                │                │
+     │ 1. Request +   │                │                │                │
+     │    Cognito JWT │                │                │                │
+     │───────────────>│                │                │                │
+     │                │                │                │                │
+     │                │ 2. Validate JWT│                │                │
+     │                │   (Authorizer) │                │                │
+     │                │───────────────>│                │                │
+     │                │                │                │                │
+     │                │                │ 3. Lookup      │                │
+     │                │                │    tenant      │                │
+     │                │                │────────────────│                │
+     │                │                │                │                │
+     │                │                │ 4. Get NB      │                │
+     │                │                │    tokens      │                │
+     │                │                │───────────────>│                │
+     │                │                │                │                │
+     │                │                │ 5. Init Nat    │                │
+     │                │                │    agent       │                │
+     │                │                │────────────────│                │
+     │                │                │                │                │
+     │                │                │ 6. Call NB API │                │
+     │                │                │───────────────────────────────>│
+     │                │                │                │                │
+     │                │                │ 7. Response    │                │
+     │                │                │<───────────────────────────────│
+     │                │                │                │                │
+     │ 8. Stream      │                │                │                │
+     │    response    │                │                │                │
+     │<───────────────│<───────────────│                │                │
+     │                │                │                │                │
 ```
+
+### DynamoDB Schema (Updated)
+
+```python
+# Tenants table
+{
+    "tenant_id": "uuid",                      # PK
+    "stripe_customer_id": "cus_xxx",
+    "stripe_subscription_id": "sub_xxx",
+    "plan": "team",
+
+    # NationBuilder OAuth
+    "nationbuilder_slug": "hddev3",
+    "nationbuilder_client_id": "xxx",         # App credentials (shared or per-tenant)
+    "nb_connected": True,
+    "nb_connected_at": "2025-01-12T...",
+    "nb_token_expires_at": 1736786400,        # For refresh job queries
+    "nb_needs_reauth": False,                 # True if refresh failed
+
+    # Tokens stored in Secrets Manager, not DynamoDB
+    # Secret: nat/tenant/{tenant_id}/nb-tokens
+
+    # Limits & Usage
+    "seats_limit": 5,
+    "queries_soft_cap": 2000,
+    "queries_this_month": 847,
+    "billing_cycle_start": "2025-01-01",
+
+    # Users
+    "users": [...],
+
+    # Metadata
+    "created_at": "2025-01-12",
+    "updated_at": "2025-01-12"
+}
+```
+
+### Security Considerations
+
+1. **Token storage** - NB tokens in Secrets Manager, not DynamoDB
+2. **Client secret** - Stored in Secrets Manager, never in code
+3. **PKCE** - Consider implementing for additional OAuth security
+4. **Scope** - Request minimal scope ("default" is fine for V2)
+5. **Token rotation** - Refresh tokens are single-use, always store new one
+6. **Audit log** - Log all OAuth events (connect, refresh, revoke)
 
 ## Phase 2: Scheduled Automations
 
