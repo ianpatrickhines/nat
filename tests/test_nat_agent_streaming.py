@@ -291,11 +291,13 @@ class TestProcessStreamingRequest:
         assert "event: error" in events[0]
         assert "NB_NEEDS_REAUTH" in events[0]
 
+    @patch("src.lambdas.nat_agent_streaming.handler.check_rate_limit")
     @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle")
     @patch("src.lambdas.nat_agent_streaming.handler.get_nb_tokens")
     @patch("src.lambdas.nat_agent_streaming.handler.get_user_info")
     def test_nb_tokens_missing(
-        self, mock_get_user: MagicMock, mock_get_tokens: MagicMock, mock_billing: MagicMock
+        self, mock_get_user: MagicMock, mock_get_tokens: MagicMock,
+        mock_billing: MagicMock, mock_rate_limit: MagicMock
     ) -> None:
         """Test that missing NB tokens returns error event."""
         mock_get_user.return_value = {
@@ -306,6 +308,7 @@ class TestProcessStreamingRequest:
         }
         mock_get_tokens.return_value = None
         mock_billing.return_value = None
+        mock_rate_limit.return_value = None
 
         async def _test() -> list[str]:
             body = {"query": "test query", "user_id": TEST_USER_ID}
