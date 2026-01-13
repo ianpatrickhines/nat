@@ -449,8 +449,9 @@
         "Typecheck passes"
       ],
       "priority": 26,
-      "passes": false,
-      "notes": "Depends on US-012, US-013, US-014."
+      "passes": true,
+      "notes": "Depends on US-012, US-013, US-014.",
+      "implementation": "extension/e2e/ directory with Playwright E2E tests. playwright.config.ts configures persistent context with --load-extension flag for Chrome extension testing. e2e/mocks/server.ts provides mock NB pages (/admin, /admin/signups/{id}, /admin/lists/{id}, /admin/sites/{slug}/pages/events/{id}) and mock API endpoints. e2e/fixtures.ts provides test utilities: setAuthState(), setTutorialCompleted(), waitForSidebar(), sendChatMessage(), etc. sidebar.spec.ts (11 tests): sidebar renders, collapse/expand, keyboard shortcut (Cmd/Ctrl+K), page context detection. auth.spec.ts (8 tests): all auth states (not logged in, NB not connected, needs reauth, payment failed, cancelled, ready). chat.spec.ts (14 tests): message send/receive, typing indicator, error handling, context display. All Python tests pass (484), extension typecheck passes."
     },
     {
       "id": "US-027",

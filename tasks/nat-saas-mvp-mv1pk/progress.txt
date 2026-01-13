@@ -610,3 +610,33 @@ Started: 2025-01-12
 - Signature verification tests need create_stripe_signature helper to generate valid HMAC-SHA256 signatures
 - Different subscription statuses (active, trialing, cancelled, past_due, unpaid) require separate test cases
 - End-to-end test scenarios (new_user_first_query, heavy_user_approaching_limit) help validate real use cases
+
+## 2025-01-12 - US-026: E2E tests with Playwright
+
+**Implementation:**
+- Created `extension/e2e/` directory with Playwright E2E test suite
+- `playwright.config.ts` - Configures persistent context with `--load-extension` flag for Chrome extension testing
+- `e2e/mocks/server.ts` - Mock server providing:
+  - NB-like admin pages (/admin, /admin/signups/{id}, /admin/lists/{id}, /admin/sites/{slug}/pages/events/{id})
+  - Mock API endpoints for auth status and agent queries
+  - SSE streaming endpoint for chat tests
+- `e2e/fixtures.ts` - Test utilities:
+  - `setAuthState()` - Configure extension auth state via chrome.storage
+  - `setTutorialCompleted()` - Skip tutorial for auth/chat tests
+  - `waitForSidebar()`, `getSidebarState()`, `toggleSidebarWithKeyboard()`
+  - `sendChatMessage()`, `waitForChatResponse()`
+- `sidebar.spec.ts` (11 tests): Sidebar rendering, collapse/expand, keyboard shortcut (Cmd/Ctrl+K), page context detection
+- `auth.spec.ts` (8 tests): All auth state screens (not logged in, NB not connected, needs reauth, payment failed, cancelled, ready)
+- `chat.spec.ts` (14 tests): Message send/receive, typing indicator, error handling, Enter to send, Shift+Enter for newline
+- Fixed `tests/test_nat_agent.py` - Added tenant_id mocking for tests that check beyond user lookup
+- Updated `extension/package.json` with Playwright, tsx, and @types/node dependencies
+- Updated `extension/tsconfig.json` to include e2e directory and node types
+
+**Learnings:**
+- Chrome extension E2E testing requires `chromium.launchPersistentContext()` with `--load-extension` flag
+- Extensions require headed mode (headless: false) for testing
+- Service worker URL format: `chrome-extension://{extensionId}/background.js`
+- Mock server must serve pages that trigger content script matching rules
+- Test fixtures can inject auth state via chrome.storage.local before page navigation
+- Playwright's `or()` operator useful for testing states that may be brief (typing indicator vs response)
+- Fixed pre-existing test failures by mocking tenant_id and usage tracking functions
