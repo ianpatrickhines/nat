@@ -120,8 +120,9 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
-      "notes": "Depends on US-005. Use existing tools.py and agent.py code."
+      "passes": true,
+      "notes": "Depends on US-005. Use existing tools.py and agent.py code.",
+      "implementation": "src/lambdas/nat_agent/handler.py - Lambda handler receives query and user context (page_type, person_name, etc.), retrieves NB tokens from Secrets Manager (nat/user/{user_id}/nb-tokens), uses existing create_nat_options() to configure Claude SDK with all 66 NB tools, returns JSON with response and tool_calls. Verifies nb_connected and nb_needs_reauth before processing. CloudFormation adds Lambda (120s timeout, 512MB) + POST /agent/query endpoint. 23 unit tests in tests/test_nat_agent.py."
     },
     {
       "id": "US-008",

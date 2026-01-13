@@ -114,3 +114,24 @@ Started: 2025-01-12
 - Lambda permission for EventBridge uses Principal: events.amazonaws.com with SourceArn pointing to rule
 - Pagination handling needed for DynamoDB scan (LastEvaluatedKey/ExclusiveStartKey)
 - Lambda timeout increased to 300s to handle many users in single invocation
+
+## 2025-01-12 - US-007: Port Nat agent to Lambda
+
+**Implementation:**
+- Created `src/lambdas/nat_agent/handler.py` Lambda handler for AI agent queries
+- Handler receives query and optional page context (page_type, person_name, person_id, list_name, event_name)
+- Extracts user_id from request body or X-Nat-User-Id header
+- Verifies user exists, has nb_connected=true, and nb_needs_reauth=false before processing
+- Retrieves NB tokens from Secrets Manager at `nat/user/{user_id}/nb-tokens`
+- Uses existing `create_nat_options()` from src/nat/agent.py to configure Claude SDK with all 66 tools
+- Returns JSON response with `response` (text) and `tool_calls` (list of tool invocations)
+- Error handling returns appropriate HTTP codes: 400 (bad request), 403 (NB not connected), 404 (user not found), 500 (agent error)
+- CloudFormation: Lambda function (120s timeout, 512MB memory) + POST /agent/query endpoint with CORS
+- 23 unit tests covering API key retrieval, token retrieval, user info, and handler flows
+
+**Learnings:**
+- Lambda imports should be done inside handler functions to avoid cold start issues with large packages like claude_agent_sdk
+- mypy requires explicit type annotations for DynamoDB response.get("Item") to avoid "Returning Any" errors
+- asyncio.get_event_loop().run_until_complete() bridges sync Lambda handler with async Claude SDK
+- Page context allows agent to be aware of what user is viewing (person profile, list, event) for context-aware responses
+- Error codes (NB_NOT_CONNECTED, NB_NEEDS_REAUTH, NB_TOKENS_MISSING, AGENT_ERROR) help extension show appropriate UI
