@@ -6,6 +6,7 @@ Provides natural language access to the NationBuilder V2 API.
 """
 
 import os
+import logging
 from typing import Any
 
 from claude_agent_sdk import (
@@ -19,6 +20,8 @@ from claude_agent_sdk import (
 
 from .client import init_client
 from .tools import ALL_TOOLS
+
+logger = logging.getLogger(__name__)
 
 
 # System prompt for Nat
@@ -118,10 +121,39 @@ def get_tool_names() -> list[str]:
     return [f"mcp__nationbuilder__{tool.name}" for tool in ALL_TOOLS]
 
 
+def _setup_prompt_caching() -> None:
+    """
+    Configure environment for Claude API prompt caching.
+    
+    Prompt caching can reduce costs by up to 90% for cached content.
+    This function sets up the necessary environment variables to enable
+    prompt caching when supported by the Claude Agent SDK.
+    
+    See: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+    """
+    # Check if caching is explicitly disabled
+    if os.environ.get("NAT_DISABLE_PROMPT_CACHING", "").lower() == "true":
+        logger.info("Prompt caching disabled via NAT_DISABLE_PROMPT_CACHING")
+        return
+    
+    # Enable prompt caching beta feature
+    # This sets the anthropic-beta header to "prompt-caching-2024-07-31"
+    existing_beta = os.environ.get("ANTHROPIC_BETA", "")
+    if "prompt-caching" not in existing_beta:
+        new_beta = "prompt-caching-2024-07-31"
+        if existing_beta:
+            new_beta = f"{existing_beta},prompt-caching-2024-07-31"
+        os.environ["ANTHROPIC_BETA"] = new_beta
+        logger.info(f"Enabled prompt caching: ANTHROPIC_BETA={new_beta}")
+    else:
+        logger.info("Prompt caching already enabled")
+
+
 def create_nat_options(
     slug: str,
     token: str,
-    model: str = "claude-haiku-4-5-20251001"
+    model: str = "claude-haiku-4-5-20251001",
+    enable_caching: bool = True
 ) -> ClaudeAgentOptions:
     """
     Create ClaudeAgentOptions configured for Nat.
@@ -130,10 +162,15 @@ def create_nat_options(
         slug: NationBuilder nation slug
         token: NationBuilder V2 API token
         model: Claude model to use
+        enable_caching: Whether to enable prompt caching (default: True)
 
     Returns:
         Configured ClaudeAgentOptions
     """
+    # Enable prompt caching if requested
+    if enable_caching:
+        _setup_prompt_caching()
+    
     # Initialize the NationBuilder client
     init_client(slug, token)
 

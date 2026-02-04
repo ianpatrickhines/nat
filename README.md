@@ -147,6 +147,13 @@ nat/
 
 - [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents) - Anthropic's framework for building AI agents
 - [NationBuilder V2 API](https://nationbuilder.com/api_documentation) - JSON:API format
+- [Claude Haiku 4.5](https://www.anthropic.com/claude/haiku) - Fast, cost-effective AI model with prompt caching
+
+### Cost Optimization
+
+Nat uses **prompt caching** to reduce API costs by up to 90%. The system prompt and tool schemas (~19,000 tokens) are cached and reused across queries, significantly reducing the cost per request.
+
+See [CLAUDE.md](CLAUDE.md) for detailed cost analysis and caching architecture.
 
 ### API Coverage
 
