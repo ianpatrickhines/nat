@@ -22,6 +22,40 @@ Resources:
   # DynamoDB Tables
   # =============================================================================
 
+  # NationsTable - stores nation-level subscription and usage data
+  # Each nation (organization) in NationBuilder gets one record
+  NationsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'nat-nations-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: nation_slug
+          AttributeType: S
+        - AttributeName: stripe_customer_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: nation_slug
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: stripe-customer-index
+          KeySchema:
+            - AttributeName: stripe_customer_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
+  # TenantsTable - kept for backwards compatibility during migration
+  # Will be deprecated in favor of NationsTable
   TenantsTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
@@ -52,6 +86,8 @@ Resources:
         - Key: Project
           Value: nat
 
+  # UsersTable - stores individual user audit logs and rate limiting data
+  # No longer stores billing/subscription information (moved to NationsTable)
   UsersTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
@@ -62,7 +98,7 @@ Resources:
       AttributeDefinitions:
         - AttributeName: user_id
           AttributeType: S
-        - AttributeName: tenant_id
+        - AttributeName: nation_slug
           AttributeType: S
         - AttributeName: email
           AttributeType: S
@@ -70,9 +106,9 @@ Resources:
         - AttributeName: user_id
           KeyType: HASH
       GlobalSecondaryIndexes:
-        - IndexName: tenant-index
+        - IndexName: nation-index
           KeySchema:
-            - AttributeName: tenant_id
+            - AttributeName: nation_slug
               KeyType: HASH
           Projection:
             ProjectionType: ALL
@@ -121,6 +157,8 @@ Resources:
                   - dynamodb:Query
                   - dynamodb:Scan
                 Resource:
+                  - !GetAtt NationsTable.Arn
+                  - !Sub '${NationsTable.Arn}/index/*'
                   - !GetAtt TenantsTable.Arn
                   - !Sub '${TenantsTable.Arn}/index/*'
                   - !GetAtt UsersTable.Arn
@@ -208,7 +246,7 @@ Resources:
         IntegrationResponses:
           - StatusCode: '200'
             ResponseParameters:
-              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Nat-User-Id,X-Nat-Tenant-Id'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Nat-User-Id,X-Nat-Tenant-Id,X-Nat-Nation-Slug'"
               method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
               method.response.header.Access-Control-Allow-Origin: "'*'"
       MethodResponses:
@@ -241,6 +279,7 @@ Resources:
       MemorySize: 256
       Environment:
         Variables:
+          NATIONS_TABLE: !Ref NationsTable
           TENANTS_TABLE: !Ref TenantsTable
           USERS_TABLE: !Ref UsersTable
           STRIPE_WEBHOOK_SECRET_NAME: !Sub 'nat/stripe-webhook-secret-${Environment}'
@@ -314,6 +353,7 @@ Resources:
       MemorySize: 256
       Environment:
         Variables:
+          NATIONS_TABLE: !Ref NationsTable
           USERS_TABLE: !Ref UsersTable
           NB_CLIENT_ID_SECRET: !Sub 'nat/nb-client-id-${Environment}'
           NB_CLIENT_SECRET_SECRET: !Sub 'nat/nb-client-secret-${Environment}'
@@ -351,6 +391,7 @@ Resources:
       MemorySize: 256
       Environment:
         Variables:
+          NATIONS_TABLE: !Ref NationsTable
           USERS_TABLE: !Ref UsersTable
           NB_CLIENT_ID_SECRET: !Sub 'nat/nb-client-id-${Environment}'
           NB_CLIENT_SECRET_SECRET: !Sub 'nat/nb-client-secret-${Environment}'
@@ -611,6 +652,7 @@ Resources:
       MemorySize: 512
       Environment:
         Variables:
+          NATIONS_TABLE: !Ref NationsTable
           USERS_TABLE: !Ref UsersTable
           TENANTS_TABLE: !Ref TenantsTable
           ANTHROPIC_API_KEY_SECRET: !Sub 'nat/anthropic-api-key-${Environment}'
@@ -682,7 +724,7 @@ Resources:
         IntegrationResponses:
           - StatusCode: '200'
             ResponseParameters:
-              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Nat-User-Id,X-Nat-Tenant-Id'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Nat-User-Id,X-Nat-Tenant-Id,X-Nat-Nation-Slug'"
               method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
               method.response.header.Access-Control-Allow-Origin: "'*'"
       MethodResponses:
@@ -714,6 +756,7 @@ Resources:
       MemorySize: 512
       Environment:
         Variables:
+          NATIONS_TABLE: !Ref NationsTable
           USERS_TABLE: !Ref UsersTable
           TENANTS_TABLE: !Ref TenantsTable
           ANTHROPIC_API_KEY_SECRET: !Sub 'nat/anthropic-api-key-${Environment}'
@@ -738,6 +781,7 @@ Resources:
           - Content-Type
           - X-Nat-User-Id
           - X-Nat-Tenant-Id
+          - X-Nat-Nation-Slug
         AllowMethods:
           - POST
           - '*'
@@ -789,6 +833,18 @@ Resources:
           Value: nat
 
 Outputs:
+  NationsTableName:
+    Description: Name of the Nations DynamoDB table
+    Value: !Ref NationsTable
+    Export:
+      Name: !Sub '${AWS::StackName}-NationsTableName'
+
+  NationsTableArn:
+    Description: ARN of the Nations DynamoDB table
+    Value: !GetAtt NationsTable.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-NationsTableArn'
+
   TenantsTableName:
     Description: Name of the Tenants DynamoDB table
     Value: !Ref TenantsTable

@@ -28,7 +28,11 @@ SUCCESS_URL = os.environ.get(
 CANCEL_URL = os.environ.get("CANCEL_URL", "https://natassistant.com/pricing")
 
 # Stripe Price IDs for each plan (configured in production via env vars)
+# NEW PRICING MODEL: Nat ($29/mo) and Nat Pro ($79/mo)
 STRIPE_PRICE_IDS: dict[str, str] = {
+    "nat": os.environ.get("STRIPE_PRICE_NAT", "price_nat_monthly"),
+    "nat_pro": os.environ.get("STRIPE_PRICE_NAT_PRO", "price_nat_pro_monthly"),
+    # Legacy plans (backwards compatibility)
     "starter": os.environ.get("STRIPE_PRICE_STARTER", "price_starter_monthly"),
     "team": os.environ.get("STRIPE_PRICE_TEAM", "price_team_monthly"),
     "organization": os.environ.get("STRIPE_PRICE_ORG", "price_org_monthly"),
@@ -62,10 +66,15 @@ def get_stripe_secret_key() -> str:
 
 
 def create_checkout_session(
-    plan: str, stripe_api_key: str
+    plan: str,
+    nation_slug: str,
+    stripe_api_key: str,
 ) -> dict[str, Any]:
     """
-    Create a Stripe Checkout session.
+    Create a Stripe Checkout session for a nation subscription.
+
+    In the new model, subscriptions are tied to nations (organizations).
+    The nation_slug is passed in metadata so the webhook knows which nation to update.
 
     Uses urllib3 for HTTP requests since we want to keep dependencies minimal.
     """
@@ -89,6 +98,7 @@ def create_checkout_session(
         "billing_address_collection": "auto",
         "customer_creation": "always",
         "metadata[plan]": plan,
+        "metadata[nation_slug]": nation_slug,  # NEW: Nation identifier
     }
 
     # Encode as form data
@@ -118,7 +128,8 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
     Lambda handler for creating Stripe Checkout sessions.
 
     Expects POST request with JSON body containing:
-    - plan: string ("starter", "team", or "organization")
+    - plan: string ("nat", "nat_pro", or legacy: "starter", "team", "organization")
+    - nation_slug: string (required for new nation-based billing)
 
     Returns:
     - checkout_url: URL to redirect user to Stripe Checkout
@@ -147,6 +158,8 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         body = json.loads(body_str)
 
         plan = body.get("plan", "").lower()
+        nation_slug = body.get("nation_slug", "")
+
         if not plan:
             return {
                 "statusCode": 400,
@@ -154,11 +167,18 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
                 "headers": headers,
             }
 
+        if not nation_slug:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Missing required field: nation_slug"}),
+                "headers": headers,
+            }
+
         if plan not in STRIPE_PRICE_IDS:
             return {
                 "statusCode": 400,
                 "body": json.dumps({
-                    "error": f"Invalid plan: {plan}. Valid plans: starter, team, organization"
+                    "error": f"Invalid plan: {plan}. Valid plans: nat, nat_pro (legacy: starter, team, organization)"
                 }),
                 "headers": headers,
             }
@@ -166,8 +186,8 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         # Get Stripe API key
         stripe_api_key = get_stripe_secret_key()
 
-        # Create checkout session
-        session = create_checkout_session(plan, stripe_api_key)
+        # Create checkout session with nation_slug in metadata
+        session = create_checkout_session(plan, nation_slug, stripe_api_key)
 
         logger.info(f"Created checkout session {session.get('id')} for plan {plan}")
 

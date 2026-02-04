@@ -25,6 +25,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # Environment variables
+NATIONS_TABLE = os.environ.get("NATIONS_TABLE", "nat-nations-dev")
 USERS_TABLE = os.environ.get("USERS_TABLE", "nat-users-dev")
 NB_CLIENT_ID_SECRET = os.environ.get(
     "NB_CLIENT_ID_SECRET", "nat/nb-client-id"
@@ -93,19 +94,21 @@ def get_dynamodb_resource() -> Any:
 
 
 def store_nb_tokens(
-    user_id: str,
+    nation_slug: str,
     access_token: str,
     refresh_token: str,
     expires_in: int,
-    nb_slug: str,
 ) -> None:
     """
-    Store NationBuilder tokens in Secrets Manager.
+    Store NationBuilder tokens in Secrets Manager per nation.
 
-    Secret path: nat/user/{user_id}/nb-tokens
+    Secret path: nat/nation/{nation_slug}/nb-tokens
+    
+    In the new architecture, tokens are stored per-nation (not per-user),
+    allowing anyone logged into the nation to use Nat if the nation subscribes.
     """
     client = get_secrets_manager_client()
-    secret_name = f"nat/user/{user_id}/nb-tokens"
+    secret_name = f"nat/nation/{nation_slug}/nb-tokens"
 
     now = datetime.now(timezone.utc)
     expires_at = now.timestamp() + expires_in
@@ -114,7 +117,7 @@ def store_nb_tokens(
         "access_token": access_token,
         "refresh_token": refresh_token,
         "expires_at": expires_at,
-        "nb_slug": nb_slug,
+        "nation_slug": nation_slug,
         "updated_at": now.isoformat(),
     }
 
@@ -124,18 +127,18 @@ def store_nb_tokens(
             SecretId=secret_name,
             SecretString=json.dumps(token_data),
         )
-        logger.info(f"Updated NB tokens for user {user_id}")
+        logger.info(f"Updated NB tokens for nation {nation_slug}")
     except ClientError as e:
         if e.response["Error"]["Code"] == "ResourceNotFoundException":
             # Create new secret if it doesn't exist
             client.create_secret(
                 Name=secret_name,
                 SecretString=json.dumps(token_data),
-                Description=f"NationBuilder OAuth tokens for user {user_id}",
+                Description=f"NationBuilder OAuth tokens for nation {nation_slug}",
             )
-            logger.info(f"Created NB tokens secret for user {user_id}")
+            logger.info(f"Created NB tokens secret for nation {nation_slug}")
         else:
-            logger.error(f"Failed to store NB tokens for user {user_id}: {e}")
+            logger.error(f"Failed to store NB tokens for nation {nation_slug}: {e}")
             raise
 
 
@@ -190,13 +193,144 @@ def exchange_code_for_tokens(
         raise
 
 
+def update_nation_nb_status(
+    nation_slug: str,
+    nb_connected: bool,
+    expires_at: float,
+    admin_email: str | None = None,
+) -> None:
+    """
+    Update or create nation record with NationBuilder connection status.
+    
+    In the new architecture, nations (not users) have subscription/connection status.
+    """
+    dynamodb = get_dynamodb_resource()
+    nations_table = dynamodb.Table(NATIONS_TABLE)
+
+    now = datetime.now(timezone.utc).isoformat()
+    expires_at_iso = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
+
+    try:
+        # Check if nation record exists
+        response = nations_table.get_item(Key={"nation_slug": nation_slug})
+        nation_exists = "Item" in response
+
+        if nation_exists:
+            # Update existing nation
+            update_expr = (
+                "SET nb_connected = :connected, "
+                "nb_token_expires_at = :expires, "
+                "nb_needs_reauth = :needs_reauth, "
+                "updated_at = :updated"
+            )
+            expr_values: dict[str, Any] = {
+                ":connected": nb_connected,
+                ":expires": expires_at_iso,
+                ":needs_reauth": False,
+                ":updated": now,
+            }
+            if admin_email:
+                update_expr += ", admin_email = :email"
+                expr_values[":email"] = admin_email
+            
+            nations_table.update_item(
+                Key={"nation_slug": nation_slug},
+                UpdateExpression=update_expr,
+                ExpressionAttributeValues=expr_values,
+            )
+            logger.info(f"Updated NB connection status for nation {nation_slug}")
+        else:
+            # Create new nation record with trial status
+            nation_item: dict[str, Any] = {
+                "nation_slug": nation_slug,
+                "nb_connected": nb_connected,
+                "nb_token_expires_at": expires_at_iso,
+                "nb_needs_reauth": False,
+                "subscription_plan": "trial",  # Default trial until Stripe subscription created
+                "subscription_status": "trialing",  # Trialing status matches plan
+                "queries_used_this_period": 0,
+                "queries_limit": 50,  # Limited trial queries
+                "created_at": now,
+                "updated_at": now,
+            }
+            if admin_email:
+                nation_item["admin_email"] = admin_email
+            
+            nations_table.put_item(Item=nation_item)
+            logger.info(f"Created nation record for {nation_slug}")
+    except ClientError as e:
+        logger.error(f"Failed to update nation {nation_slug}: {e}")
+        raise
+
+
+def update_user_nation_link(
+    user_id: str,
+    nation_slug: str,
+    email: str | None = None,
+) -> None:
+    """
+    Update user record to link to nation_slug.
+    
+    In the new architecture, users are linked to nations, and the nation
+    (not the user) has the subscription/billing status.
+    """
+    dynamodb = get_dynamodb_resource()
+    users_table = dynamodb.Table(USERS_TABLE)
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    try:
+        # Check if user exists
+        response = users_table.get_item(Key={"user_id": user_id})
+        user_exists = "Item" in response
+
+        if user_exists:
+            # Update existing user
+            update_expr = "SET nation_slug = :slug, last_active_at = :updated"
+            expr_values: dict[str, Any] = {
+                ":slug": nation_slug,
+                ":updated": now,
+            }
+            if email:
+                update_expr += ", email = :email"
+                expr_values[":email"] = email
+
+            users_table.update_item(
+                Key={"user_id": user_id},
+                UpdateExpression=update_expr,
+                ExpressionAttributeValues=expr_values,
+            )
+            logger.info(f"Updated user {user_id} to link to nation {nation_slug}")
+        else:
+            # Create new user record
+            user_item: dict[str, Any] = {
+                "user_id": user_id,
+                "nation_slug": nation_slug,
+                "created_at": now,
+                "last_active_at": now,
+            }
+            if email:
+                user_item["email"] = email
+            
+            users_table.put_item(Item=user_item)
+            logger.info(f"Created user {user_id} linked to nation {nation_slug}")
+    except ClientError as e:
+        logger.error(f"Failed to update user {user_id}: {e}")
+        raise
+
+
 def update_user_nb_status(
     user_id: str,
     nb_connected: bool,
     nb_slug: str,
     expires_at: float,
 ) -> None:
-    """Update user record with NationBuilder connection status."""
+    """
+    DEPRECATED: Update user record with NationBuilder connection status.
+    
+    This function is kept for backwards compatibility.
+    New code should use update_nation_nb_status() and update_user_nation_link().
+    """
     dynamodb = get_dynamodb_resource()
     users_table = dynamodb.Table(USERS_TABLE)
 
@@ -208,7 +342,7 @@ def update_user_nb_status(
             Key={"user_id": user_id},
             UpdateExpression=(
                 "SET nb_connected = :connected, "
-                "nb_slug = :slug, "
+                "nation_slug = :slug, "
                 "nb_token_expires_at = :expires, "
                 "nb_needs_reauth = :needs_reauth, "
                 "last_active_at = :updated"
@@ -289,6 +423,9 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
             error_url = f"{ERROR_REDIRECT_URL}?error=invalid_state"
             return create_redirect_response(error_url)
 
+        # Extract optional email from state for admin user creation
+        user_email = state_data.get("email")
+
         logger.info(f"Processing OAuth callback for user {user_id}, nation {nb_slug}")
 
         # Get NB OAuth credentials from Secrets Manager
@@ -313,31 +450,37 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
             error_url = f"{ERROR_REDIRECT_URL}?error=no_token"
             return create_redirect_response(error_url)
 
-        # Store tokens in Secrets Manager
-        store_nb_tokens(
-            user_id=user_id,
-            access_token=access_token,
-            refresh_token=refresh_token or "",
-            expires_in=expires_in,
-            nb_slug=nb_slug,
-        )
-
         # Calculate expiration timestamp
         now = datetime.now(timezone.utc)
         expires_at = now.timestamp() + expires_in
 
-        # Update user record
-        update_user_nb_status(
-            user_id=user_id,
-            nb_connected=True,
-            nb_slug=nb_slug,
-            expires_at=expires_at,
+        # NEW: Store tokens per-nation (not per-user)
+        store_nb_tokens(
+            nation_slug=nb_slug,
+            access_token=access_token,
+            refresh_token=refresh_token or "",
+            expires_in=expires_in,
         )
 
-        logger.info(f"Successfully connected NB for user {user_id}")
+        # NEW: Update nation connection status
+        update_nation_nb_status(
+            nation_slug=nb_slug,
+            nb_connected=True,
+            expires_at=expires_at,
+            admin_email=user_email,
+        )
 
-        # Redirect to success page
-        success_url = f"{SUCCESS_REDIRECT_URL}?user_id={user_id}"
+        # NEW: Link user to nation
+        update_user_nation_link(
+            user_id=user_id,
+            nation_slug=nb_slug,
+            email=user_email,
+        )
+
+        logger.info(f"Successfully connected NB for nation {nb_slug} (user {user_id})")
+
+        # Redirect to success page with nation info
+        success_url = f"{SUCCESS_REDIRECT_URL}?user_id={user_id}&nation={nb_slug}"
         return create_redirect_response(success_url)
 
     except ClientError as e:
