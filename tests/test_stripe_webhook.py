@@ -29,6 +29,7 @@ TEST_WEBHOOK_SECRET = "whsec_test_secret_12345"
 TEST_CUSTOMER_ID = "cus_test123"
 TEST_SUBSCRIPTION_ID = "sub_test456"
 TEST_EMAIL = "test@example.com"
+TEST_NATION_SLUG = "testnation"
 
 
 def create_stripe_signature(payload: str, secret: str, timestamp: int | None = None) -> str:
@@ -98,13 +99,13 @@ class TestGetPlanFromPrice:
         assert get_plan_from_price("prod_team_plan_abc") == "team"
         assert get_plan_from_price("price_org_enterprise") == "org"
 
-    def test_unknown_defaults_to_starter(self) -> None:
-        """Test that unknown price IDs default to starter."""
-        assert get_plan_from_price("price_unknown_xyz") == "starter"
+    def test_unknown_defaults_to_nat(self) -> None:
+        """Test that unknown price IDs default to nat (the basic plan)."""
+        assert get_plan_from_price("price_unknown_xyz") == "nat"
 
 
 class MockDynamoDBTable:
-    """Mock DynamoDB table for testing."""
+    """Mock DynamoDB table for testing (per-nation model)."""
 
     def __init__(self) -> None:
         self.items: dict[str, dict[str, Any]] = {}
@@ -112,11 +113,21 @@ class MockDynamoDBTable:
         self.update_calls: list[dict[str, Any]] = []
         self.query_results: list[dict[str, Any]] = []
 
+    @staticmethod
+    def _key(data: dict[str, Any]) -> Any:
+        return data.get("nation_slug") or data.get("tenant_id") or data.get("user_id")
+
     def put_item(self, Item: dict[str, Any]) -> None:
-        key = Item.get("tenant_id") or Item.get("user_id")
+        key = self._key(Item)
         if key:
             self.items[key] = Item
         self.put_calls.append(Item)
+
+    def get_item(self, Key: dict[str, Any]) -> dict[str, Any]:
+        key = self._key(Key)
+        if key is not None and key in self.items:
+            return {"Item": self.items[key]}
+        return {}
 
     def update_item(
         self,
@@ -141,32 +152,32 @@ class MockDynamoDBTable:
 
 
 class MockDynamoDBResource:
-    """Mock DynamoDB resource for testing."""
+    """Mock DynamoDB resource for testing.
 
-    def __init__(self, tenants_table: MockDynamoDBTable, users_table: MockDynamoDBTable) -> None:
-        self.tenants_table = tenants_table
-        self.users_table = users_table
+    The webhook handler now operates exclusively on the NationsTable, so a
+    single backing table is sufficient regardless of the table name requested.
+    """
+
+    def __init__(self, nations_table: MockDynamoDBTable) -> None:
+        self.nations_table = nations_table
 
     def Table(self, name: str) -> MockDynamoDBTable:
-        if "tenant" in name.lower():
-            return self.tenants_table
-        return self.users_table
+        return self.nations_table
 
 
 class TestHandleCheckoutCompleted:
     """Tests for checkout.session.completed event handling."""
 
-    def test_creates_tenant_and_user(self) -> None:
-        """Test that checkout creates new tenant and user."""
-        tenants_table = MockDynamoDBTable()
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+    def test_creates_nation(self) -> None:
+        """Test that checkout creates a new nation record."""
+        nations_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(nations_table)
 
         session = {
             "customer": TEST_CUSTOMER_ID,
             "subscription": TEST_SUBSCRIPTION_ID,
             "customer_email": TEST_EMAIL,
-            "metadata": {"plan": "team"},
+            "metadata": {"plan": "nat", "nation_slug": TEST_NATION_SLUG},
         }
 
         with patch(
@@ -175,33 +186,28 @@ class TestHandleCheckoutCompleted:
         ):
             handle_checkout_completed(session)
 
-        # Verify tenant created
-        assert len(tenants_table.put_calls) == 1
-        tenant = tenants_table.put_calls[0]
-        assert tenant["stripe_customer_id"] == TEST_CUSTOMER_ID
-        assert tenant["stripe_subscription_id"] == TEST_SUBSCRIPTION_ID
-        assert tenant["plan"] == "team"
-        assert tenant["queries_limit"] == PLAN_QUERY_LIMITS["team"]
-        assert tenant["queries_this_month"] == 0
+        # Verify nation created (new nations start in a trial state until the
+        # subscription.updated webhook confirms the paid plan).
+        assert len(nations_table.put_calls) == 1
+        nation = nations_table.put_calls[0]
+        assert nation["nation_slug"] == TEST_NATION_SLUG
+        assert nation["stripe_customer_id"] == TEST_CUSTOMER_ID
+        assert nation["stripe_subscription_id"] == TEST_SUBSCRIPTION_ID
+        assert nation["subscription_status"] == "trialing"
+        assert nation["admin_email"] == TEST_EMAIL
+        assert nation["queries_used_this_period"] == 0
 
-        # Verify user created
-        assert len(users_table.put_calls) == 1
-        user = users_table.put_calls[0]
-        assert user["email"] == TEST_EMAIL
-        assert user["role"] == "admin"
-        assert user["nb_connected"] is False
-
-    def test_existing_tenant_not_duplicated(self) -> None:
-        """Test that existing tenant is not duplicated."""
-        tenants_table = MockDynamoDBTable()
-        tenants_table.query_results = [{"tenant_id": "existing-tenant-id"}]
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+    def test_existing_nation_updated_not_duplicated(self) -> None:
+        """Test that an existing nation is updated rather than duplicated."""
+        nations_table = MockDynamoDBTable()
+        nations_table.items[TEST_NATION_SLUG] = {"nation_slug": TEST_NATION_SLUG}
+        mock_resource = MockDynamoDBResource(nations_table)
 
         session = {
             "customer": TEST_CUSTOMER_ID,
             "subscription": TEST_SUBSCRIPTION_ID,
             "customer_email": TEST_EMAIL,
+            "metadata": {"plan": "nat", "nation_slug": TEST_NATION_SLUG},
         }
 
         with patch(
@@ -210,14 +216,33 @@ class TestHandleCheckoutCompleted:
         ):
             handle_checkout_completed(session)
 
-        # Should not create new tenant
-        assert len(tenants_table.put_calls) == 0
+        # Should update the existing nation, not create a new one
+        assert len(nations_table.put_calls) == 0
+        assert len(nations_table.update_calls) == 1
+
+    def test_missing_nation_slug_raises(self) -> None:
+        """Test that a checkout without nation_slug metadata raises."""
+        nations_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(nations_table)
+
+        session = {
+            "customer": TEST_CUSTOMER_ID,
+            "subscription": TEST_SUBSCRIPTION_ID,
+            "customer_email": TEST_EMAIL,
+            "metadata": {"plan": "nat"},
+        }
+
+        with patch(
+            "src.lambdas.stripe_webhook.handler.get_dynamodb_resource",
+            return_value=mock_resource,
+        ):
+            with pytest.raises(ValueError, match="nation_slug"):
+                handle_checkout_completed(session)
 
     def test_no_customer_id_returns_early(self) -> None:
         """Test that missing customer ID is handled gracefully."""
-        tenants_table = MockDynamoDBTable()
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+        nations_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(nations_table)
 
         session = {"subscription": TEST_SUBSCRIPTION_ID}
 
@@ -227,7 +252,7 @@ class TestHandleCheckoutCompleted:
         ):
             handle_checkout_completed(session)
 
-        assert len(tenants_table.put_calls) == 0
+        assert len(nations_table.put_calls) == 0
 
 
 class TestHandleSubscriptionUpdated:
@@ -235,10 +260,11 @@ class TestHandleSubscriptionUpdated:
 
     def test_updates_subscription_status(self) -> None:
         """Test that subscription status is updated."""
-        tenants_table = MockDynamoDBTable()
-        tenants_table.query_results = [{"tenant_id": "test-tenant-id", "billing_cycle_start": "2025-01-01"}]
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+        nations_table = MockDynamoDBTable()
+        nations_table.query_results = [
+            {"nation_slug": TEST_NATION_SLUG, "billing_period_start": "2025-01-01"}
+        ]
+        mock_resource = MockDynamoDBResource(nations_table)
 
         subscription = {
             "customer": TEST_CUSTOMER_ID,
@@ -255,19 +281,20 @@ class TestHandleSubscriptionUpdated:
         ):
             handle_subscription_updated(subscription)
 
-        assert len(tenants_table.update_calls) == 1
-        update = tenants_table.update_calls[0]
-        assert update["Key"] == {"tenant_id": "test-tenant-id"}
+        assert len(nations_table.update_calls) == 1
+        update = nations_table.update_calls[0]
+        assert update["Key"] == {"nation_slug": TEST_NATION_SLUG}
         assert update["ExpressionAttributeValues"][":status"] == "active"
         assert update["ExpressionAttributeValues"][":plan"] == "team"
         assert update["ExpressionAttributeValues"][":limit"] == PLAN_QUERY_LIMITS["team"]
 
     def test_resets_usage_on_new_billing_cycle(self) -> None:
         """Test that query usage is reset when billing cycle changes."""
-        tenants_table = MockDynamoDBTable()
-        tenants_table.query_results = [{"tenant_id": "test-tenant-id", "billing_cycle_start": "2025-01-01"}]
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+        nations_table = MockDynamoDBTable()
+        nations_table.query_results = [
+            {"nation_slug": TEST_NATION_SLUG, "billing_period_start": "2025-01-01"}
+        ]
+        mock_resource = MockDynamoDBResource(nations_table)
 
         # New billing cycle (February)
         new_period_start = 1738368000  # 2025-02-01
@@ -286,17 +313,17 @@ class TestHandleSubscriptionUpdated:
         ):
             handle_subscription_updated(subscription)
 
-        update = tenants_table.update_calls[0]
+        update = nations_table.update_calls[0]
         assert ":zero" in update["ExpressionAttributeValues"]
         assert update["ExpressionAttributeValues"][":zero"] == 0
-        assert "billing_cycle_start" in update["UpdateExpression"]
+        assert "billing_period_start" in update["UpdateExpression"]
+        assert "queries_used_this_period" in update["UpdateExpression"]
 
-    def test_no_tenant_found(self) -> None:
-        """Test that missing tenant is handled gracefully."""
-        tenants_table = MockDynamoDBTable()
-        tenants_table.query_results = []
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+    def test_no_nation_found(self) -> None:
+        """Test that a missing nation is handled gracefully."""
+        nations_table = MockDynamoDBTable()
+        nations_table.query_results = []
+        mock_resource = MockDynamoDBResource(nations_table)
 
         subscription = {
             "customer": TEST_CUSTOMER_ID,
@@ -310,7 +337,7 @@ class TestHandleSubscriptionUpdated:
         ):
             handle_subscription_updated(subscription)
 
-        assert len(tenants_table.update_calls) == 0
+        assert len(nations_table.update_calls) == 0
 
 
 class TestHandleSubscriptionDeleted:
@@ -318,10 +345,9 @@ class TestHandleSubscriptionDeleted:
 
     def test_marks_subscription_cancelled(self) -> None:
         """Test that subscription is marked as cancelled."""
-        tenants_table = MockDynamoDBTable()
-        tenants_table.query_results = [{"tenant_id": "test-tenant-id"}]
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+        nations_table = MockDynamoDBTable()
+        nations_table.query_results = [{"nation_slug": TEST_NATION_SLUG}]
+        mock_resource = MockDynamoDBResource(nations_table)
 
         subscription = {
             "customer": TEST_CUSTOMER_ID,
@@ -334,8 +360,8 @@ class TestHandleSubscriptionDeleted:
         ):
             handle_subscription_deleted(subscription)
 
-        assert len(tenants_table.update_calls) == 1
-        update = tenants_table.update_calls[0]
+        assert len(nations_table.update_calls) == 1
+        update = nations_table.update_calls[0]
         assert update["ExpressionAttributeValues"][":status"] == "cancelled"
 
 
@@ -344,9 +370,8 @@ class TestHandler:
 
     def test_valid_checkout_event(self) -> None:
         """Test successful processing of checkout event."""
-        tenants_table = MockDynamoDBTable()
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+        nations_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(nations_table)
 
         event_body = {
             "id": "evt_test",
@@ -356,6 +381,7 @@ class TestHandler:
                     "customer": TEST_CUSTOMER_ID,
                     "subscription": TEST_SUBSCRIPTION_ID,
                     "customer_email": TEST_EMAIL,
+                    "metadata": {"nation_slug": TEST_NATION_SLUG},
                 }
             },
         }
@@ -449,9 +475,8 @@ class TestHandler:
 
     def test_lowercase_signature_header(self) -> None:
         """Test that lowercase signature header is accepted."""
-        tenants_table = MockDynamoDBTable()
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+        nations_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(nations_table)
 
         event_body = {
             "type": "checkout.session.completed",
@@ -459,6 +484,7 @@ class TestHandler:
                 "object": {
                     "customer": TEST_CUSTOMER_ID,
                     "subscription": TEST_SUBSCRIPTION_ID,
+                    "metadata": {"nation_slug": TEST_NATION_SLUG},
                 }
             },
         }

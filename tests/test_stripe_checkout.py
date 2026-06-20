@@ -22,6 +22,7 @@ from src.lambdas.stripe_checkout.handler import (
 TEST_STRIPE_SECRET_KEY = "sk_test_12345"
 TEST_SESSION_ID = "cs_test_session_123"
 TEST_CHECKOUT_URL = "https://checkout.stripe.com/pay/cs_test_session_123"
+TEST_NATION_SLUG = "testnation"
 
 
 class TestGetStripeSecretKey:
@@ -84,7 +85,7 @@ class TestCreateCheckoutSession:
                 }).encode("utf-8"),
             )
 
-            result = create_checkout_session("starter", TEST_STRIPE_SECRET_KEY)
+            result = create_checkout_session("starter", TEST_NATION_SLUG, TEST_STRIPE_SECRET_KEY)
 
             assert result["id"] == TEST_SESSION_ID
             assert result["url"] == TEST_CHECKOUT_URL
@@ -110,7 +111,7 @@ class TestCreateCheckoutSession:
                 }).encode("utf-8"),
             )
 
-            result = create_checkout_session("team", TEST_STRIPE_SECRET_KEY)
+            result = create_checkout_session("team", TEST_NATION_SLUG, TEST_STRIPE_SECRET_KEY)
             assert result["id"] == TEST_SESSION_ID
 
     def test_create_session_organization_plan(self) -> None:
@@ -127,13 +128,13 @@ class TestCreateCheckoutSession:
                 }).encode("utf-8"),
             )
 
-            result = create_checkout_session("organization", TEST_STRIPE_SECRET_KEY)
+            result = create_checkout_session("organization", TEST_NATION_SLUG, TEST_STRIPE_SECRET_KEY)
             assert result["id"] == TEST_SESSION_ID
 
     def test_create_session_invalid_plan(self) -> None:
         """Test that invalid plan raises ValueError."""
         with pytest.raises(ValueError, match="Invalid plan"):
-            create_checkout_session("invalid_plan", TEST_STRIPE_SECRET_KEY)
+            create_checkout_session("invalid_plan", TEST_NATION_SLUG, TEST_STRIPE_SECRET_KEY)
 
     def test_create_session_stripe_error(self) -> None:
         """Test handling Stripe API errors."""
@@ -152,7 +153,7 @@ class TestCreateCheckoutSession:
             )
 
             with pytest.raises(RuntimeError, match="Invalid price ID"):
-                create_checkout_session("starter", TEST_STRIPE_SECRET_KEY)
+                create_checkout_session("starter", TEST_NATION_SLUG, TEST_STRIPE_SECRET_KEY)
 
 
 class TestHandler:
@@ -172,7 +173,7 @@ class TestHandler:
 
         event: dict[str, Any] = {
             "httpMethod": "POST",
-            "body": json.dumps({"plan": "starter"}),
+            "body": json.dumps({"plan": "starter", "nation_slug": TEST_NATION_SLUG}),
         }
 
         response = handler(event, None)
@@ -196,7 +197,7 @@ class TestHandler:
 
         event: dict[str, Any] = {
             "httpMethod": "POST",
-            "body": json.dumps({"plan": "team"}),
+            "body": json.dumps({"plan": "team", "nation_slug": TEST_NATION_SLUG}),
         }
 
         response = handler(event, None)
@@ -219,7 +220,7 @@ class TestHandler:
 
         event: dict[str, Any] = {
             "httpMethod": "POST",
-            "body": json.dumps({"plan": "organization"}),
+            "body": json.dumps({"plan": "organization", "nation_slug": TEST_NATION_SLUG}),
         }
 
         response = handler(event, None)
@@ -240,13 +241,15 @@ class TestHandler:
 
         event: dict[str, Any] = {
             "httpMethod": "POST",
-            "body": json.dumps({"plan": "STARTER"}),
+            "body": json.dumps({"plan": "STARTER", "nation_slug": TEST_NATION_SLUG}),
         }
 
         response = handler(event, None)
 
         assert response["statusCode"] == 200
-        mock_create_session.assert_called_once_with("starter", TEST_STRIPE_SECRET_KEY)
+        mock_create_session.assert_called_once_with(
+            "starter", TEST_NATION_SLUG, TEST_STRIPE_SECRET_KEY
+        )
 
     def test_options_preflight(self) -> None:
         """Test OPTIONS preflight request handling."""
@@ -277,7 +280,7 @@ class TestHandler:
         """Test error when plan is invalid."""
         event: dict[str, Any] = {
             "httpMethod": "POST",
-            "body": json.dumps({"plan": "enterprise"}),
+            "body": json.dumps({"plan": "enterprise", "nation_slug": TEST_NATION_SLUG}),
         }
 
         response = handler(event, None)
@@ -324,7 +327,7 @@ class TestHandler:
 
         event: dict[str, Any] = {
             "httpMethod": "POST",
-            "body": json.dumps({"plan": "starter"}),
+            "body": json.dumps({"plan": "starter", "nation_slug": TEST_NATION_SLUG}),
         }
 
         response = handler(event, None)
@@ -344,7 +347,7 @@ class TestHandler:
 
         event: dict[str, Any] = {
             "httpMethod": "POST",
-            "body": json.dumps({"plan": "starter"}),
+            "body": json.dumps({"plan": "starter", "nation_slug": TEST_NATION_SLUG}),
         }
 
         response = handler(event, None)

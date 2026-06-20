@@ -233,11 +233,8 @@ class TestProcessStreamingRequest:
         assert "event: error" in events[0]
         assert "Missing required field: user_id" in events[0]
 
-    @patch("src.lambdas.nat_agent_streaming.handler.get_user_info")
-    def test_user_not_found(self, mock_get_user: MagicMock) -> None:
-        """Test that unknown user returns error event."""
-        mock_get_user.return_value = None
-
+    def test_missing_nation_slug(self) -> None:
+        """Test that a request without nation_slug returns an error event."""
         async def _test() -> list[str]:
             body = {"query": "test query", "user_id": TEST_USER_ID}
             events = []
@@ -248,18 +245,28 @@ class TestProcessStreamingRequest:
         events = run_async(_test())
         assert len(events) == 1
         assert "event: error" in events[0]
-        assert "USER_NOT_FOUND" in events[0]
+        assert "Missing required field: nation_slug" in events[0]
 
-    @patch("src.lambdas.nat_agent_streaming.handler.get_user_info")
-    def test_nb_not_connected(self, mock_get_user: MagicMock) -> None:
-        """Test that NB not connected returns error event."""
-        mock_get_user.return_value = {
-            "user_id": TEST_USER_ID,
-            "nb_connected": False,
-        }
+    @patch("src.lambdas.nat_agent_streaming.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation")
+    @patch("src.lambdas.nat_agent_streaming.handler.get_nb_tokens_by_nation")
+    def test_nb_not_connected(
+        self,
+        mock_get_tokens: MagicMock,
+        mock_billing: MagicMock,
+        mock_rate_limit: MagicMock,
+    ) -> None:
+        """Test that a nation without NB tokens returns NB_NOT_CONNECTED."""
+        mock_get_tokens.return_value = None
+        mock_billing.return_value = False
+        mock_rate_limit.return_value = None
 
         async def _test() -> list[str]:
-            body = {"query": "test query", "user_id": TEST_USER_ID}
+            body = {
+                "query": "test query",
+                "user_id": TEST_USER_ID,
+                "nation_slug": TEST_NB_SLUG,
+            }
             events = []
             async for event in process_streaming_request(body):
                 events.append(event)
@@ -269,49 +276,28 @@ class TestProcessStreamingRequest:
         assert len(events) == 1
         assert "event: error" in events[0]
         assert "NB_NOT_CONNECTED" in events[0]
-
-    @patch("src.lambdas.nat_agent_streaming.handler.get_user_info")
-    def test_nb_needs_reauth(self, mock_get_user: MagicMock) -> None:
-        """Test that NB needs reauth returns error event."""
-        mock_get_user.return_value = {
-            "user_id": TEST_USER_ID,
-            "nb_connected": True,
-            "nb_needs_reauth": True,
-        }
-
-        async def _test() -> list[str]:
-            body = {"query": "test query", "user_id": TEST_USER_ID}
-            events = []
-            async for event in process_streaming_request(body):
-                events.append(event)
-            return events
-
-        events = run_async(_test())
-        assert len(events) == 1
-        assert "event: error" in events[0]
-        assert "NB_NEEDS_REAUTH" in events[0]
+        mock_billing.assert_called_once_with(TEST_NB_SLUG)
 
     @patch("src.lambdas.nat_agent_streaming.handler.check_rate_limit")
-    @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle")
-    @patch("src.lambdas.nat_agent_streaming.handler.get_nb_tokens")
-    @patch("src.lambdas.nat_agent_streaming.handler.get_user_info")
-    def test_nb_tokens_missing(
-        self, mock_get_user: MagicMock, mock_get_tokens: MagicMock,
-        mock_billing: MagicMock, mock_rate_limit: MagicMock
+    @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation")
+    def test_rate_limit_exceeded(
+        self, mock_billing: MagicMock, mock_rate_limit: MagicMock
     ) -> None:
-        """Test that missing NB tokens returns error event."""
-        mock_get_user.return_value = {
-            "user_id": TEST_USER_ID,
-            "tenant_id": TEST_TENANT_ID,
-            "nb_connected": True,
-            "nb_needs_reauth": False,
-        }
-        mock_get_tokens.return_value = None
-        mock_billing.return_value = None
-        mock_rate_limit.return_value = None
+        """Test that exceeding the per-user rate limit returns an error event."""
+        from src.lambdas.shared.usage_tracking import RateLimitError
+
+        mock_billing.return_value = False
+        mock_rate_limit.side_effect = RateLimitError(
+            message="Rate limit exceeded. Please wait 3 seconds.",
+            retry_after=3,
+        )
 
         async def _test() -> list[str]:
-            body = {"query": "test query", "user_id": TEST_USER_ID}
+            body = {
+                "query": "test query",
+                "user_id": TEST_USER_ID,
+                "nation_slug": TEST_NB_SLUG,
+            }
             events = []
             async for event in process_streaming_request(body):
                 events.append(event)
@@ -320,7 +306,49 @@ class TestProcessStreamingRequest:
         events = run_async(_test())
         assert len(events) == 1
         assert "event: error" in events[0]
-        assert "NB_TOKENS_MISSING" in events[0]
+        assert "RATE_LIMIT_EXCEEDED" in events[0]
+
+    @patch("src.lambdas.nat_agent_streaming.handler.track_query_usage_nation")
+    @patch("src.lambdas.nat_agent_streaming.handler.stream_agent_response")
+    @patch("src.lambdas.nat_agent_streaming.handler.get_nb_tokens_by_nation")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation")
+    def test_successful_streaming_tracks_usage(
+        self,
+        mock_billing: MagicMock,
+        mock_rate_limit: MagicMock,
+        mock_get_tokens: MagicMock,
+        mock_stream: MagicMock,
+        mock_track: MagicMock,
+    ) -> None:
+        """Test that a successful stream increments per-nation usage."""
+        mock_billing.return_value = False
+        mock_rate_limit.return_value = None
+        mock_get_tokens.return_value = (TEST_NB_TOKEN, TEST_NB_SLUG)
+        mock_track.return_value = 42
+
+        async def fake_stream(**kwargs: Any) -> Any:
+            yield format_sse_event(
+                SSE_EVENT_DONE, {"response": "hi", "tool_calls": []}
+            )
+
+        mock_stream.side_effect = lambda **kwargs: fake_stream(**kwargs)
+
+        async def _test() -> list[str]:
+            body = {
+                "query": "test query",
+                "user_id": TEST_USER_ID,
+                "nation_slug": TEST_NB_SLUG,
+            }
+            events = []
+            async for event in process_streaming_request(body):
+                events.append(event)
+            return events
+
+        events = run_async(_test())
+        assert any("event: done" in event for event in events)
+        # Usage is charged to the nation, keyed by the requesting user
+        mock_track.assert_called_once_with(TEST_USER_ID, TEST_NB_SLUG)
 
 
 class TestHandler:

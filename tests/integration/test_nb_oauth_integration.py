@@ -53,22 +53,26 @@ class MockDynamoDBTable:
         self.items: dict[str, dict[str, Any]] = {}
         if items:
             for item in items:
-                key = item.get("user_id") or item.get("tenant_id")
+                key = self._key(item)
                 if key:
                     self.items[key] = item
         self.update_calls: list[dict[str, Any]] = []
         self.put_calls: list[dict[str, Any]] = []
         self.get_calls: list[dict[str, Any]] = []
 
+    @staticmethod
+    def _key(data: dict[str, Any]) -> Any:
+        return data.get("nation_slug") or data.get("user_id") or data.get("tenant_id")
+
     def get_item(self, Key: dict[str, Any]) -> dict[str, Any]:
         self.get_calls.append(Key)
-        key = Key.get("user_id") or Key.get("tenant_id")
+        key = self._key(Key)
         if key and key in self.items:
             return {"Item": self.items[key]}
         return {}
 
     def put_item(self, Item: dict[str, Any]) -> None:
-        key = Item.get("user_id") or Item.get("tenant_id")
+        key = self._key(Item)
         if key:
             self.items[key] = Item
         self.put_calls.append(Item)
@@ -86,7 +90,7 @@ class MockDynamoDBTable:
             "ExpressionAttributeValues": ExpressionAttributeValues,
         })
         # Simulate the update
-        key = Key.get("user_id") or Key.get("tenant_id")
+        key = self._key(Key)
         if key and key in self.items:
             for attr_key, attr_val in ExpressionAttributeValues.items():
                 # Extract attribute name from :attr format
@@ -176,6 +180,7 @@ class TestOAuthCallbackIntegration:
             "nb_connected": False,
             "nb_needs_reauth": False,
         }])
+        nations_table = MockDynamoDBTable()
 
         secrets_client = MockSecretsManagerClient({
             "nat/nb-client-id": TEST_CLIENT_ID,
@@ -205,7 +210,9 @@ class TestOAuthCallbackIntegration:
         with (
             patch(
                 "src.lambdas.nb_oauth_callback.handler.get_dynamodb_resource",
-                return_value=MockDynamoDBResource({"users": users_table}),
+                return_value=MockDynamoDBResource(
+                    {"nations": nations_table, "users": users_table}
+                ),
             ),
             patch(
                 "src.lambdas.nb_oauth_callback.handler.get_secrets_manager_client",
@@ -230,8 +237,8 @@ class TestOAuthCallbackIntegration:
         assert call_args[0][0] == "POST"
         assert f"https://{TEST_NB_SLUG}.nationbuilder.com/oauth/token" in call_args[0][1]
 
-        # Verify tokens were stored in Secrets Manager
-        token_secret_name = f"nat/user/{TEST_USER_ID}/nb-tokens"
+        # Verify tokens were stored in Secrets Manager (per-nation path)
+        token_secret_name = f"nat/nation/{TEST_NB_SLUG}/nb-tokens"
         assert len(secrets_client.put_calls) > 0 or len(secrets_client.create_calls) > 0
 
         # Check if tokens exist in secrets
@@ -239,16 +246,21 @@ class TestOAuthCallbackIntegration:
         stored_tokens = json.loads(secrets_client.secrets[token_secret_name])
         assert stored_tokens["access_token"] == TEST_ACCESS_TOKEN
         assert stored_tokens["refresh_token"] == TEST_REFRESH_TOKEN
-        assert stored_tokens["nb_slug"] == TEST_NB_SLUG
+        assert stored_tokens["nation_slug"] == TEST_NB_SLUG
         assert "expires_at" in stored_tokens
 
-        # Verify user record was updated
+        # Verify nation connection record was created
+        assert len(nations_table.put_calls) == 1
+        nation = nations_table.put_calls[0]
+        assert nation["nation_slug"] == TEST_NB_SLUG
+        assert nation["nb_connected"] is True
+        assert nation["nb_needs_reauth"] is False
+
+        # Verify the user was linked to the nation
         assert len(users_table.update_calls) == 1
         update = users_table.update_calls[0]
         assert update["Key"] == {"user_id": TEST_USER_ID}
-        assert update["ExpressionAttributeValues"][":connected"] is True
         assert update["ExpressionAttributeValues"][":slug"] == TEST_NB_SLUG
-        assert update["ExpressionAttributeValues"][":needs_reauth"] is False
 
     def test_oauth_flow_reconnecting_user(self) -> None:
         """Test OAuth flow for a user who needs to reconnect (reauth)."""
@@ -259,14 +271,20 @@ class TestOAuthCallbackIntegration:
             "email": "test@example.com",
             "nb_connected": True,
             "nb_needs_reauth": True,
-            "nb_slug": TEST_NB_SLUG,
+            "nation_slug": TEST_NB_SLUG,
+        }])
+        # Nation previously connected but flagged as needing reauth
+        nations_table = MockDynamoDBTable([{
+            "nation_slug": TEST_NB_SLUG,
+            "nb_connected": True,
+            "nb_needs_reauth": True,
         }])
 
         # Existing token secret will be updated
         secrets_client = MockSecretsManagerClient({
             "nat/nb-client-id": TEST_CLIENT_ID,
             "nat/nb-client-secret": TEST_CLIENT_SECRET,
-            f"nat/user/{TEST_USER_ID}/nb-tokens": json.dumps({
+            f"nat/nation/{TEST_NB_SLUG}/nb-tokens": json.dumps({
                 "access_token": "old_token",
                 "refresh_token": "old_refresh",
             }),
@@ -292,7 +310,9 @@ class TestOAuthCallbackIntegration:
         with (
             patch(
                 "src.lambdas.nb_oauth_callback.handler.get_dynamodb_resource",
-                return_value=MockDynamoDBResource({"users": users_table}),
+                return_value=MockDynamoDBResource(
+                    {"nations": nations_table, "users": users_table}
+                ),
             ),
             patch(
                 "src.lambdas.nb_oauth_callback.handler.get_secrets_manager_client",
@@ -315,8 +335,8 @@ class TestOAuthCallbackIntegration:
         stored_tokens = json.loads(secrets_client.put_calls[0]["SecretString"])
         assert stored_tokens["access_token"] == TEST_ACCESS_TOKEN
 
-        # Verify nb_needs_reauth was cleared
-        update = users_table.update_calls[0]
+        # Verify nb_needs_reauth was cleared on the nation record
+        update = nations_table.update_calls[0]
         assert update["ExpressionAttributeValues"][":needs_reauth"] is False
 
     def test_oauth_flow_nb_api_error(self) -> None:
@@ -498,7 +518,7 @@ class TestOAuthCallbackIntegration:
         assert "connected" in response["headers"]["Location"].lower()
 
         # Verify empty refresh_token was stored
-        token_secret_name = f"nat/user/{TEST_USER_ID}/nb-tokens"
+        token_secret_name = f"nat/nation/{TEST_NB_SLUG}/nb-tokens"
         stored_tokens = json.loads(secrets_client.secrets[token_secret_name])
         assert stored_tokens["refresh_token"] == ""
 
