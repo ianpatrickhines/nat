@@ -44,6 +44,38 @@ test.describe('Auth flow states', () => {
     await expect(subscribeBtn).toHaveText('Subscribe to Nat');
   });
 
+  test('shows "Subscribe your nation" when authenticated but nation not subscribed', async ({
+    context,
+    extensionId,
+    nbPage,
+  }) => {
+    // Authenticated to Nat, but the current nation has no subscription on record.
+    await setAuthState(context, extensionId, {
+      isAuthenticated: true,
+      userId: 'user-123',
+      tenantId: 'tenant-456',
+      nationSlug: 'testnation',
+      nbConnected: false,
+      nbNeedsReauth: false,
+      subscriptionStatus: 'none',
+    });
+
+    await nbPage.goto('http://localhost:3456/admin');
+    await waitForSidebar(nbPage);
+
+    // Should show the nation-not-subscribed screen (distinct from not-logged-in)
+    const title = nbPage.locator('.nat-auth-screen__title');
+    await expect(title).toHaveText('Subscribe your nation');
+
+    // CTA should prompt to subscribe the nation
+    const subscribeBtn = nbPage.locator('.nat-auth-screen__btn--primary');
+    await expect(subscribeBtn).toHaveText('Subscribe your nation');
+
+    // The detected nation slug should be surfaced in the description
+    const description = nbPage.locator('.nat-auth-screen__description');
+    await expect(description).toContainText('testnation');
+  });
+
   test('shows connect NationBuilder when logged in but NB not connected', async ({
     context,
     extensionId,
@@ -54,6 +86,7 @@ test.describe('Auth flow states', () => {
       isAuthenticated: true,
       userId: 'user-123',
       tenantId: 'tenant-456',
+      nationSlug: 'testnation',
       nbConnected: false,
       nbNeedsReauth: false,
       subscriptionStatus: 'active',
@@ -89,6 +122,7 @@ test.describe('Auth flow states', () => {
       isAuthenticated: true,
       userId: 'user-123',
       tenantId: 'tenant-456',
+      nationSlug: 'testnation',
       nbConnected: true,
       nbNeedsReauth: true,
       subscriptionStatus: 'active',
@@ -121,6 +155,7 @@ test.describe('Auth flow states', () => {
       isAuthenticated: true,
       userId: 'user-123',
       tenantId: 'tenant-456',
+      nationSlug: 'testnation',
       nbConnected: true,
       nbNeedsReauth: false,
       subscriptionStatus: 'past_due',
@@ -153,6 +188,7 @@ test.describe('Auth flow states', () => {
       isAuthenticated: true,
       userId: 'user-123',
       tenantId: 'tenant-456',
+      nationSlug: 'testnation',
       nbConnected: true,
       nbNeedsReauth: false,
       subscriptionStatus: 'cancelled',
@@ -189,6 +225,7 @@ test.describe('Auth flow states', () => {
       isAuthenticated: true,
       userId: 'user-123',
       tenantId: 'tenant-456',
+      nationSlug: 'testnation',
       nbConnected: true,
       nbNeedsReauth: false,
       subscriptionStatus: 'active',
@@ -249,6 +286,7 @@ test.describe('Auth state transitions', () => {
       isAuthenticated: true,
       userId: 'user-123',
       tenantId: 'tenant-456',
+      nationSlug: 'testnation',
       nbConnected: false,
       subscriptionStatus: 'active',
     });

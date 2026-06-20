@@ -609,7 +609,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Content-Type,X-Nat-User-Id,X-Nat-Tenant-Id",
+            "Access-Control-Allow-Headers": "Content-Type,X-Nat-User-Id,X-Nat-Nation-Slug",
         },
         "body": sse_response,
     }

@@ -68,6 +68,7 @@ export const test = base.extend<ExtensionFixtures>({
         isAuthenticated: true,
         userId: 'test-user-123',
         tenantId: 'test-tenant-456',
+        nationSlug: 'testnation',
         nbConnected: true,
         nbNeedsReauth: false,
         subscriptionStatus: 'active',
@@ -92,9 +93,10 @@ export async function setAuthState(
     isAuthenticated: boolean;
     userId?: string | null;
     tenantId?: string | null;
+    nationSlug?: string | null;
     nbConnected?: boolean;
     nbNeedsReauth?: boolean;
-    subscriptionStatus?: 'active' | 'trialing' | 'cancelled' | 'past_due' | 'unpaid' | null;
+    subscriptionStatus?: 'active' | 'trialing' | 'cancelled' | 'past_due' | 'unpaid' | 'none' | null;
   }
 ): Promise<void> {
   // Access extension's background page to set storage
