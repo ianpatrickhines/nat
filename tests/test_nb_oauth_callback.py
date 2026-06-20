@@ -42,11 +42,28 @@ def create_state(user_id: str, nb_slug: str, redirect_uri: str) -> str:
 
 
 class MockDynamoDBTable:
-    """Mock DynamoDB table for testing."""
+    """Mock DynamoDB table for testing (per-nation model)."""
 
     def __init__(self) -> None:
         self.items: dict[str, dict[str, Any]] = {}
+        self.put_calls: list[dict[str, Any]] = []
         self.update_calls: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _key(data: dict[str, Any]) -> Any:
+        return data.get("nation_slug") or data.get("user_id")
+
+    def get_item(self, Key: dict[str, Any]) -> dict[str, Any]:
+        key = self._key(Key)
+        if key is not None and key in self.items:
+            return {"Item": self.items[key]}
+        return {}
+
+    def put_item(self, Item: dict[str, Any]) -> None:
+        key = self._key(Item)
+        if key:
+            self.items[key] = Item
+        self.put_calls.append(Item)
 
     def update_item(
         self,
@@ -62,12 +79,25 @@ class MockDynamoDBTable:
 
 
 class MockDynamoDBResource:
-    """Mock DynamoDB resource for testing."""
+    """Mock DynamoDB resource for testing.
 
-    def __init__(self, users_table: MockDynamoDBTable) -> None:
+    Routes by table name so the per-nation NationsTable and the UsersTable
+    operations land on distinct backing tables.
+    """
+
+    def __init__(
+        self,
+        users_table: MockDynamoDBTable,
+        nations_table: MockDynamoDBTable | None = None,
+    ) -> None:
         self.users_table = users_table
+        self.nations_table = (
+            nations_table if nations_table is not None else MockDynamoDBTable()
+        )
 
     def Table(self, name: str) -> MockDynamoDBTable:
+        if "nation" in name.lower():
+            return self.nations_table
         return self.users_table
 
 
@@ -128,25 +158,24 @@ class TestStoreNBTokens:
     def test_updates_existing_secret(self) -> None:
         """Test that existing secret is updated."""
         mock_client = MockSecretsManagerClient()
-        mock_client.secrets[f"nat/user/{TEST_USER_ID}/nb-tokens"] = "{}"
+        mock_client.secrets[f"nat/nation/{TEST_NB_SLUG}/nb-tokens"] = "{}"
 
         with patch(
             "src.lambdas.nb_oauth_callback.handler.get_secrets_manager_client",
             return_value=mock_client,
         ):
             store_nb_tokens(
-                user_id=TEST_USER_ID,
+                nation_slug=TEST_NB_SLUG,
                 access_token=TEST_ACCESS_TOKEN,
                 refresh_token=TEST_REFRESH_TOKEN,
                 expires_in=7200,
-                nb_slug=TEST_NB_SLUG,
             )
 
         assert len(mock_client.put_calls) == 1
         secret_data = json.loads(mock_client.put_calls[0]["SecretString"])
         assert secret_data["access_token"] == TEST_ACCESS_TOKEN
         assert secret_data["refresh_token"] == TEST_REFRESH_TOKEN
-        assert secret_data["nb_slug"] == TEST_NB_SLUG
+        assert secret_data["nation_slug"] == TEST_NB_SLUG
         assert "expires_at" in secret_data
 
     def test_creates_new_secret_if_not_exists(self) -> None:
@@ -170,15 +199,14 @@ class TestStoreNBTokens:
             return_value=mock_client,
         ):
             store_nb_tokens(
-                user_id=TEST_USER_ID,
+                nation_slug=TEST_NB_SLUG,
                 access_token=TEST_ACCESS_TOKEN,
                 refresh_token=TEST_REFRESH_TOKEN,
                 expires_in=7200,
-                nb_slug=TEST_NB_SLUG,
             )
 
         assert len(mock_client.create_calls) == 1
-        assert mock_client.create_calls[0]["Name"] == f"nat/user/{TEST_USER_ID}/nb-tokens"
+        assert mock_client.create_calls[0]["Name"] == f"nat/nation/{TEST_NB_SLUG}/nb-tokens"
 
 
 class TestUpdateUserNBStatus:
@@ -320,11 +348,12 @@ class TestHandler:
     def test_successful_oauth_flow(self) -> None:
         """Test successful OAuth flow end-to-end."""
         users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(users_table)
+        nations_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(users_table, nations_table)
         mock_sm_client = MockSecretsManagerClient()
         mock_sm_client.secrets["nat/nb-client-id"] = TEST_CLIENT_ID
         mock_sm_client.secrets["nat/nb-client-secret"] = TEST_CLIENT_SECRET
-        mock_sm_client.secrets[f"nat/user/{TEST_USER_ID}/nb-tokens"] = "{}"
+        mock_sm_client.secrets[f"nat/nation/{TEST_NB_SLUG}/nb-tokens"] = "{}"
 
         mock_token_response = MockHTTPResponse(
             status=200,
@@ -367,8 +396,14 @@ class TestHandler:
         assert "connected" in response["headers"]["Location"].lower()
         assert TEST_USER_ID in response["headers"]["Location"]
 
-        # Verify user was updated
-        assert len(users_table.update_calls) == 1
+        # Verify nation connection record was created/updated
+        assert len(nations_table.put_calls) == 1
+        assert nations_table.put_calls[0]["nation_slug"] == TEST_NB_SLUG
+        assert nations_table.put_calls[0]["nb_connected"] is True
+
+        # Verify user was linked to the nation
+        assert len(users_table.put_calls) == 1
+        assert users_table.put_calls[0]["nation_slug"] == TEST_NB_SLUG
 
     def test_token_exchange_failure_redirects_to_error(self) -> None:
         """Test that token exchange failure redirects to error page."""
