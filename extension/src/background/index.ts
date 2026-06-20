@@ -9,9 +9,11 @@ interface AuthState {
   isAuthenticated: boolean;
   userId: string | null;
   tenantId: string | null;
+  /** Slug of the NationBuilder nation the user is currently in (per-nation billing). */
+  nationSlug: string | null;
   nbConnected: boolean;
   nbNeedsReauth: boolean;
-  subscriptionStatus: 'active' | 'trialing' | 'cancelled' | 'past_due' | 'unpaid' | null;
+  subscriptionStatus: 'active' | 'trialing' | 'cancelled' | 'past_due' | 'unpaid' | 'none' | null;
 }
 
 interface PageContext {
@@ -67,6 +69,7 @@ type MessageType =
   | { type: 'CLEAR_AUTH_STATE' }
   | { type: 'SET_NB_CONNECTION'; nbConnected: boolean; nbNeedsReauth?: boolean }
   | { type: 'SET_SUBSCRIPTION_STATUS'; status: AuthState['subscriptionStatus'] }
+  | { type: 'SET_NATION_SLUG'; nationSlug: string | null }
   | { type: 'SUBMIT_QUERY'; query: string; context?: PageContext; undoStack?: UndoableAction[] }
   | { type: 'CANCEL_QUERY' }
   | { type: 'GET_STREAMING_STATE' }
@@ -130,6 +133,7 @@ async function getAuthState(): Promise<AuthState> {
       'authToken',
       'userId',
       'tenantId',
+      'nationSlug',
       'nbConnected',
       'nbNeedsReauth',
       'subscriptionStatus'
@@ -138,6 +142,7 @@ async function getAuthState(): Promise<AuthState> {
         isAuthenticated: !!result.authToken,
         userId: result.userId || null,
         tenantId: result.tenantId || null,
+        nationSlug: result.nationSlug || null,
         nbConnected: !!result.nbConnected,
         nbNeedsReauth: !!result.nbNeedsReauth,
         subscriptionStatus: result.subscriptionStatus || null,
@@ -168,6 +173,7 @@ async function clearAuthState(): Promise<void> {
       'authToken',
       'userId',
       'tenantId',
+      'nationSlug',
       'nbConnected',
       'nbNeedsReauth',
       'subscriptionStatus'
@@ -194,6 +200,22 @@ async function setNbConnection(nbConnected: boolean, nbNeedsReauth?: boolean): P
 async function setSubscriptionStatus(status: AuthState['subscriptionStatus']): Promise<void> {
   return new Promise((resolve) => {
     chrome.storage.local.set({ subscriptionStatus: status }, () => resolve());
+  });
+}
+
+/**
+ * Update the current nation slug.
+ *
+ * The content script detects this from the page URL and reports it here so the
+ * background worker can attach it to backend requests (per-nation billing).
+ */
+async function setNationSlug(nationSlug: string | null): Promise<void> {
+  return new Promise((resolve) => {
+    if (nationSlug) {
+      chrome.storage.local.set({ nationSlug }, () => resolve());
+    } else {
+      chrome.storage.local.remove('nationSlug', () => resolve());
+    }
   });
 }
 
@@ -429,6 +451,10 @@ async function submitQuery(request: QueryRequest): Promise<{ success: boolean; e
     return { success: false, error: 'Not authenticated' };
   }
 
+  if (!authState.nationSlug) {
+    return { success: false, error: 'Unable to detect your nation. Open Nat on a NationBuilder admin page.' };
+  }
+
   if (!authState.nbConnected) {
     return { success: false, error: 'NationBuilder not connected' };
   }
@@ -466,11 +492,12 @@ async function submitQuery(request: QueryRequest): Promise<{ success: boolean; e
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${authToken}`,
         'X-Nat-User-Id': authState.userId || '',
-        'X-Nat-Tenant-Id': authState.tenantId || '',
+        'X-Nat-Nation-Slug': authState.nationSlug || '',
       },
       body: JSON.stringify({
         query: request.query,
         user_id: authState.userId,
+        nation_slug: authState.nationSlug,
         context: request.context || {},
         confirmed_tools: streamingState.confirmedTools,
         undo_stack: request.undoStack || [],
@@ -487,6 +514,7 @@ async function submitQuery(request: QueryRequest): Promise<{ success: boolean; e
       let errorCode = 'API_ERROR';
       if (response.status === 402) errorCode = 'PAYMENT_REQUIRED';
       else if (response.status === 403) errorCode = 'FORBIDDEN';
+      else if (response.status === 404) errorCode = 'NATION_NOT_FOUND';
       else if (response.status === 429) errorCode = 'RATE_LIMIT_EXCEEDED';
 
       await broadcastToNbTabs({
@@ -643,6 +671,13 @@ chrome.runtime.onMessage.addListener((
       return true;
     }
 
+    case 'SET_NATION_SLUG': {
+      setNationSlug(message.nationSlug)
+        .then(() => notifyAuthStateChanged())
+        .then(() => sendResponse({ success: true }));
+      return true;
+    }
+
     case 'SUBMIT_QUERY': {
       submitQuery({
         query: message.query,
@@ -712,7 +747,7 @@ chrome.action.onClicked.addListener((tab) => {
 chrome.storage.onChanged.addListener((changes, namespace) => {
   if (namespace === 'local') {
     // If any auth-related field changed, notify all tabs
-    const authFields = ['authToken', 'userId', 'tenantId', 'nbConnected', 'nbNeedsReauth', 'subscriptionStatus'];
+    const authFields = ['authToken', 'userId', 'tenantId', 'nationSlug', 'nbConnected', 'nbNeedsReauth', 'subscriptionStatus'];
     const hasAuthChange = authFields.some((field) => field in changes);
 
     if (hasAuthChange) {

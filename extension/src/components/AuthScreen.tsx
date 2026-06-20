@@ -8,16 +8,19 @@ interface AuthState {
   isAuthenticated: boolean;
   userId: string | null;
   tenantId: string | null;
+  /** Slug of the NationBuilder nation the user is currently in (per-nation billing). */
+  nationSlug: string | null;
   nbConnected: boolean;
   nbNeedsReauth: boolean;
-  subscriptionStatus: 'active' | 'trialing' | 'cancelled' | 'past_due' | 'unpaid' | null;
+  subscriptionStatus: 'active' | 'trialing' | 'cancelled' | 'past_due' | 'unpaid' | 'none' | null;
 }
 
 type AuthScreenType =
-  | 'not_logged_in'      // Not authenticated - show subscribe prompt
-  | 'nb_not_connected'   // Logged in but NB not connected
-  | 'nb_needs_reauth'    // NB connection needs reauthorization
-  | 'subscription_lapsed' // Subscription inactive (cancelled/past_due/unpaid)
+  | 'not_logged_in'       // User not authenticated to Nat - show sign-in / subscribe prompt
+  | 'nation_not_subscribed' // Authenticated, but this nation has no subscription
+  | 'nb_not_connected'    // Logged in but NB not connected
+  | 'nb_needs_reauth'     // NB connection needs reauthorization
+  | 'subscription_lapsed' // Nation subscription lapsed (cancelled/past_due/unpaid)
   | 'ready';              // All good, show chat
 
 interface AuthScreenProps {
@@ -42,12 +45,18 @@ const UPDATE_CARD_URL = 'https://billing.stripe.com/p/login/test'; // Stripe bil
  * Determine which auth screen to show based on auth state
  */
 export function getAuthScreenType(authState: AuthState): AuthScreenType {
-  // Not authenticated at all
+  // Not authenticated to Nat at all (the user themselves isn't signed in)
   if (!authState.isAuthenticated) {
     return 'not_logged_in';
   }
 
-  // Subscription is not active
+  // Authenticated, but this nation has never subscribed (no subscription on record).
+  // Distinct from a lapsed subscription: here we prompt to subscribe the nation.
+  if (authState.subscriptionStatus === null || authState.subscriptionStatus === 'none') {
+    return 'nation_not_subscribed';
+  }
+
+  // Nation subscription exists but is no longer active (cancelled / payment failed)
   if (authState.subscriptionStatus !== 'active' && authState.subscriptionStatus !== 'trialing') {
     return 'subscription_lapsed';
   }
@@ -101,6 +110,45 @@ function NotLoggedInScreen() {
         <a href={STRIPE_CHECKOUT_URL} target="_blank" rel="noopener noreferrer">
           Sign in
         </a>
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Authenticated, but the current nation has no subscription -
+ * Show a "Subscribe your nation" prompt.
+ */
+function NationNotSubscribedScreen({ nationSlug }: { nationSlug: string | null }) {
+  const handleSubscribe = () => {
+    // Pass the detected nation through so checkout can pre-fill it.
+    const url = nationSlug
+      ? `${STRIPE_CHECKOUT_URL}?nation_slug=${encodeURIComponent(nationSlug)}`
+      : STRIPE_CHECKOUT_URL;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  return (
+    <div className="nat-auth-screen">
+      <div className="nat-auth-screen__icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4" />
+        </svg>
+      </div>
+      <h2 className="nat-auth-screen__title">Subscribe your nation</h2>
+      <p className="nat-auth-screen__description">
+        {nationSlug
+          ? <>Nat isn't active for <strong>{nationSlug}</strong> yet. Subscribe this nation and everyone on your team can use Nat.</>
+          : <>This nation doesn't have an active Nat subscription yet. Subscribe to let everyone on your team use Nat.</>}
+      </p>
+      <button
+        className="nat-auth-screen__btn nat-auth-screen__btn--primary"
+        onClick={handleSubscribe}
+      >
+        Subscribe your nation
+      </button>
+      <p className="nat-auth-screen__hint">
+        One subscription covers your whole nation — no per-seat billing.
       </p>
     </div>
   );
@@ -261,6 +309,9 @@ export function AuthScreen({ authState }: AuthScreenProps) {
     case 'not_logged_in':
       return <NotLoggedInScreen />;
 
+    case 'nation_not_subscribed':
+      return <NationNotSubscribedScreen nationSlug={authState.nationSlug} />;
+
     case 'nb_not_connected':
       return <NbNotConnectedScreen />;
 
@@ -285,6 +336,7 @@ export function useAuthState() {
     isAuthenticated: false,
     userId: null,
     tenantId: null,
+    nationSlug: null,
     nbConnected: false,
     nbNeedsReauth: false,
     subscriptionStatus: null,

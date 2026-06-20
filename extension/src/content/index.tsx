@@ -1,13 +1,38 @@
 import { render } from 'preact';
 import { Sidebar, SidebarHandle } from '../components/Sidebar';
 import { createRef } from 'preact';
-import { detectPageContext, watchForPageChanges, PageContext } from '../utils/pageContext';
+import { detectPageContext, extractNationSlugFromUrl, watchForPageChanges, PageContext } from '../utils/pageContext';
 
 // Reference to sidebar for keyboard toggle and context updates
 let sidebarRef: { current: SidebarHandle | null } = { current: null };
 
 // Store current page context
 let currentPageContext: PageContext | null = null;
+
+// Track the last reported slug so we only message the background on change.
+let lastReportedNationSlug: string | null | undefined = undefined;
+
+/**
+ * Detect the nation slug from the current URL and report it to the background
+ * worker so it can be attached to backend requests (per-nation billing).
+ */
+function reportNationSlug() {
+  const nationSlug = extractNationSlugFromUrl(window.location.href);
+  if (nationSlug === lastReportedNationSlug) {
+    return;
+  }
+  lastReportedNationSlug = nationSlug;
+
+  try {
+    const sending = chrome.runtime.sendMessage({ type: 'SET_NATION_SLUG', nationSlug });
+    // sendMessage returns a Promise in MV3; ignore failures (e.g. worker asleep).
+    if (sending && typeof sending.catch === 'function') {
+      sending.catch(() => {});
+    }
+  } catch {
+    // chrome.runtime may be unavailable if the extension context was invalidated.
+  }
+}
 
 function updateBodyMargin(isOpen: boolean) {
   // Adjust body margin to prevent sidebar from overlapping NB content
@@ -54,6 +79,9 @@ function init() {
   // Detect initial page context
   currentPageContext = detectPageContext();
 
+  // Detect and report the nation slug for per-nation billing
+  reportNationSlug();
+
   // Set initial body margin
   updateBodyMargin(true);
 
@@ -63,6 +91,8 @@ function init() {
   // Set up page context watching for SPA navigation
   watchForPageChanges((context) => {
     currentPageContext = context;
+    // The slug can change on SPA navigation between nations; re-report it.
+    reportNationSlug();
     if (sidebarRef.current) {
       sidebarRef.current.setPageContext(context);
     }

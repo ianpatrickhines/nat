@@ -153,7 +153,7 @@ const server = http.createServer((req, res) => {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, X-Nat-User-Id, X-Nat-Tenant-Id',
+        'Access-Control-Allow-Headers': 'Content-Type, X-Nat-User-Id, X-Nat-Nation-Slug',
       });
       res.end();
       return;
