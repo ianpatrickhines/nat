@@ -22,6 +22,10 @@ from src.lambdas.shared.usage_tracking import (
     track_query_usage_nation,
     check_and_reset_billing_cycle_nation,
 )
+from src.lambdas.shared.subscription_middleware import (
+    SubscriptionError,
+    verify_nation_subscription,
+)
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -382,8 +386,28 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
             f"Processing query for nation {nation_slug}, user {user_id}: {query[:100]}..."
         )
 
-        # Check if the nation's billing cycle has reset
+        # Check if the nation's billing cycle has reset (must run before the
+        # subscription limit check so queries_used reflects the current period).
         check_and_reset_billing_cycle_nation(nation_slug)
+
+        # Verify the nation's subscription before doing any work. This is the
+        # billing gate: cancelled / past-due / over-limit nations are blocked
+        # even when they still hold valid NB tokens.
+        try:
+            verify_nation_subscription(user_id, nation_slug)
+        except SubscriptionError as e:
+            logger.warning(
+                f"Nation subscription check failed for {nation_slug}: "
+                f"{e.code.value} - {e.message}"
+            )
+            return {
+                "statusCode": e.http_status,
+                "body": json.dumps({
+                    "error": e.message,
+                    "error_code": e.code.value,
+                }),
+                "headers": headers,
+            }
 
         # Check rate limit (5-second cooldown per user, anti-abuse)
         try:

@@ -22,6 +22,10 @@ from src.lambdas.shared.usage_tracking import (
     track_query_usage_nation,
     check_and_reset_billing_cycle_nation,
 )
+from src.lambdas.shared.subscription_middleware import (
+    SubscriptionError,
+    verify_nation_subscription,
+)
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -482,8 +486,25 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
 
     logger.info(f"Processing streaming query for nation {nation_slug}, user {user_id}: {query[:100]}...")
 
-    # Check if billing cycle has reset for this nation
+    # Check if billing cycle has reset for this nation (must run before the
+    # subscription limit check so queries_used reflects the current period).
     check_and_reset_billing_cycle_nation(nation_slug)
+
+    # Verify the nation's subscription before doing any work. This is the
+    # billing gate: cancelled / past-due / over-limit nations are blocked
+    # even when they still hold valid NB tokens.
+    try:
+        verify_nation_subscription(user_id, nation_slug)
+    except SubscriptionError as e:
+        logger.warning(
+            f"Nation subscription check failed for {nation_slug}: "
+            f"{e.code.value} - {e.message}"
+        )
+        yield format_sse_event(SSE_EVENT_ERROR, {
+            "error": e.message,
+            "error_code": e.code.value,
+        })
+        return
 
     # Check rate limit (5-second cooldown per user, anti-abuse)
     try:

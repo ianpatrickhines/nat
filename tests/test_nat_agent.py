@@ -322,6 +322,7 @@ class TestHandler:
         body = json.loads(response["body"])
         assert "nation_slug" in body["error"]
 
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
     @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
     @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
@@ -330,6 +331,7 @@ class TestHandler:
         mock_get_tokens: MagicMock,
         mock_billing: MagicMock,
         mock_rate: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
         """Test that a nation without NB tokens returns NB_NOT_CONNECTED."""
         mock_get_tokens.return_value = None
@@ -344,12 +346,14 @@ class TestHandler:
         mock_billing.assert_called_once_with(TEST_NATION_SLUG)
         mock_get_tokens.assert_called_once_with(TEST_NATION_SLUG)
 
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
     @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
     def test_rate_limit_exceeded(
         self,
         mock_rate: MagicMock,
         mock_billing: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
         """Test that exceeding the per-user rate limit returns 429."""
         from src.lambdas.shared.usage_tracking import RateLimitError
@@ -367,6 +371,7 @@ class TestHandler:
         assert body["error_code"] == "RATE_LIMIT_EXCEEDED"
         assert response["headers"]["Retry-After"] == "3"
 
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
     @patch("src.lambdas.nat_agent.handler.track_query_usage_nation")
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
     @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
@@ -379,6 +384,7 @@ class TestHandler:
         mock_billing: MagicMock,
         mock_rate: MagicMock,
         mock_track: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
         """Test successful agent query charges usage to the nation."""
         mock_get_tokens.return_value = (TEST_NB_TOKEN, TEST_NB_SLUG)
@@ -404,7 +410,10 @@ class TestHandler:
         assert len(body["tool_calls"]) == 1
         # Usage is charged to the nation, keyed by the requesting user
         mock_track.assert_called_once_with(TEST_USER_ID, TEST_NATION_SLUG)
+        # The subscription gate is checked for the nation before processing
+        mock_verify.assert_called_once_with(TEST_USER_ID, TEST_NATION_SLUG)
 
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
     @patch("src.lambdas.nat_agent.handler.track_query_usage_nation")
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
     @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
@@ -417,6 +426,7 @@ class TestHandler:
         mock_billing: MagicMock,
         mock_rate: MagicMock,
         mock_track: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
         """Test query with page context."""
         mock_get_tokens.return_value = (TEST_NB_TOKEN, TEST_NB_SLUG)
@@ -442,6 +452,7 @@ class TestHandler:
 
         assert response["statusCode"] == 200
 
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
     @patch("src.lambdas.nat_agent.handler.track_query_usage_nation")
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
     @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
@@ -454,6 +465,7 @@ class TestHandler:
         mock_billing: MagicMock,
         mock_rate: MagicMock,
         mock_track: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
         """Test agent error handling does not charge usage."""
         mock_get_tokens.return_value = (TEST_NB_TOKEN, TEST_NB_SLUG)
@@ -476,6 +488,7 @@ class TestHandler:
         # No usage should be charged when the agent fails
         mock_track.assert_not_called()
 
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
     @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
     @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
@@ -484,6 +497,7 @@ class TestHandler:
         mock_get_tokens: MagicMock,
         mock_billing: MagicMock,
         mock_rate: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
         """Test that user_id and nation_slug can be supplied via headers."""
         mock_get_tokens.return_value = None  # Stop after token lookup
@@ -504,6 +518,7 @@ class TestHandler:
         mock_get_tokens.assert_called_once_with(TEST_NATION_SLUG)
         mock_billing.assert_called_once_with(TEST_NATION_SLUG)
 
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
     @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
     @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
@@ -512,6 +527,7 @@ class TestHandler:
         mock_get_tokens: MagicMock,
         mock_billing: MagicMock,
         mock_rate: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
         """Test that lowercase headers are honored for user_id and nation_slug."""
         mock_get_tokens.return_value = None
@@ -527,6 +543,70 @@ class TestHandler:
 
         assert response["statusCode"] == 403
         mock_get_tokens.assert_called_once_with(TEST_NATION_SLUG)
+
+    @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
+    @patch("src.lambdas.nat_agent.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
+    def test_inactive_subscription_returns_402(
+        self,
+        mock_billing: MagicMock,
+        mock_verify: MagicMock,
+        mock_rate: MagicMock,
+        mock_get_tokens: MagicMock,
+    ) -> None:
+        """A cancelled/past-due nation is blocked with 402 before any work."""
+        from src.lambdas.shared.subscription_middleware import (
+            SubscriptionError,
+            SubscriptionErrorCode,
+        )
+
+        mock_verify.side_effect = SubscriptionError(
+            code=SubscriptionErrorCode.SUBSCRIPTION_INACTIVE,
+            message="Nation subscription is not active (status: cancelled).",
+            http_status=402,
+        )
+
+        event = create_api_event(body=self._valid_body())
+        response = handler(event, None)
+
+        assert response["statusCode"] == 402
+        body = json.loads(response["body"])
+        assert body["error_code"] == "SUBSCRIPTION_INACTIVE"
+        # Gate runs before NB tokens / rate limit, so neither is reached
+        mock_get_tokens.assert_not_called()
+        mock_rate.assert_not_called()
+
+    @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
+    @patch("src.lambdas.nat_agent.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
+    def test_query_limit_exceeded_returns_403(
+        self,
+        mock_billing: MagicMock,
+        mock_verify: MagicMock,
+        mock_rate: MagicMock,
+        mock_get_tokens: MagicMock,
+    ) -> None:
+        """A nation over its query cap is blocked with 403."""
+        from src.lambdas.shared.subscription_middleware import (
+            SubscriptionError,
+            SubscriptionErrorCode,
+        )
+
+        mock_verify.side_effect = SubscriptionError(
+            code=SubscriptionErrorCode.QUERY_LIMIT_EXCEEDED,
+            message="Monthly query limit of 500 exceeded.",
+            http_status=403,
+        )
+
+        event = create_api_event(body=self._valid_body())
+        response = handler(event, None)
+
+        assert response["statusCode"] == 403
+        body = json.loads(response["body"])
+        assert body["error_code"] == "QUERY_LIMIT_EXCEEDED"
+        mock_get_tokens.assert_not_called()
 
     def test_cors_headers_present(self) -> None:
         """Test that CORS headers advertise the nation slug header."""
