@@ -357,6 +357,7 @@ Resources:
           USERS_TABLE: !Ref UsersTable
           NB_CLIENT_ID_SECRET: !Sub 'nat/nb-client-id-${Environment}'
           NB_CLIENT_SECRET_SECRET: !Sub 'nat/nb-client-secret-${Environment}'
+          SESSION_JWT_SECRET_NAME: !Sub 'nat/session-jwt-secret-${Environment}'
           SUCCESS_REDIRECT_URL: !Sub 'https://natassistant.com/connected?env=${Environment}'
           ERROR_REDIRECT_URL: !Sub 'https://natassistant.com/connection-error?env=${Environment}'
       Tags:
@@ -656,6 +657,7 @@ Resources:
           USERS_TABLE: !Ref UsersTable
           TENANTS_TABLE: !Ref TenantsTable
           ANTHROPIC_API_KEY_SECRET: !Sub 'nat/anthropic-api-key-${Environment}'
+          SESSION_JWT_SECRET_NAME: !Sub 'nat/session-jwt-secret-${Environment}'
           CLAUDE_MODEL: 'claude-haiku-4-5-20251001'
       Tags:
         - Key: Environment
@@ -760,6 +762,7 @@ Resources:
           USERS_TABLE: !Ref UsersTable
           TENANTS_TABLE: !Ref TenantsTable
           ANTHROPIC_API_KEY_SECRET: !Sub 'nat/anthropic-api-key-${Environment}'
+          SESSION_JWT_SECRET_NAME: !Sub 'nat/session-jwt-secret-${Environment}'
           CLAUDE_MODEL: 'claude-haiku-4-5-20251001'
       Tags:
         - Key: Environment

@@ -27,6 +27,19 @@ from src.lambdas.shared.subscription_middleware import (
     verify_nation_subscription,
 )
 
+try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
+    from src.lambdas.shared.session_token import (
+        SessionContext,
+        SessionTokenError,
+        authenticate_request,
+    )
+except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
+    from shared.session_token import (  # type: ignore[no-redef]
+        SessionContext,
+        SessionTokenError,
+        authenticate_request,
+    )
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -445,6 +458,25 @@ async def stream_agent_response(
         })
 
 
+def authenticated_body(event: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    """
+    Authenticate a request and return a copy of the body with trusted identity.
+
+    ``user_id`` and ``nation_slug`` are taken from the verified session-token
+    claims, overwriting any client-supplied values (which are forgeable). This
+    closes the IDOR for the streaming path.
+
+    Raises:
+        SessionTokenError: If authentication fails (caller returns 401 / emits
+            an auth error event).
+    """
+    session: SessionContext = authenticate_request(event)
+    authenticated = dict(body)
+    authenticated["user_id"] = session.user_id
+    authenticated["nation_slug"] = session.nation_slug
+    return authenticated
+
+
 async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str, None]:
     """
     Process a streaming request and yield SSE events.
@@ -613,6 +645,20 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "body": json.dumps({"error": "Invalid JSON in request body"}),
         }
 
+    # Authenticate before any work; derive identity from the signed token.
+    try:
+        body = authenticated_body(event, body)
+    except SessionTokenError as e:
+        logger.warning(f"Authentication failed: {e.code} - {e.message}")
+        return {
+            "statusCode": e.http_status,
+            "headers": {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*",
+            },
+            "body": json.dumps({"error": e.message, "error_code": e.code}),
+        }
+
     # For non-streaming invocation (testing), return accumulated response
     # The actual streaming is handled by the streaming handler wrapper
     async def collect_response() -> str:
@@ -630,7 +676,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Content-Type,X-Nat-User-Id,X-Nat-Nation-Slug",
+            "Access-Control-Allow-Headers": "Content-Type,Authorization",
         },
         "body": sse_response,
     }
@@ -673,6 +719,18 @@ async def streaming_handler(event: dict[str, Any], response_stream: Any) -> None
         error_event = format_sse_event(SSE_EVENT_ERROR, {
             "error": "Invalid JSON in request body",
             "error_code": "BAD_REQUEST",
+        })
+        await response_stream.write(error_event.encode("utf-8"))
+        return
+
+    # Authenticate before any work; derive identity from the signed token.
+    try:
+        body = authenticated_body(event, body)
+    except SessionTokenError as e:
+        logger.warning(f"Authentication failed: {e.code} - {e.message}")
+        error_event = format_sse_event(SSE_EVENT_ERROR, {
+            "error": e.message,
+            "error_code": e.code,
         })
         await response_stream.write(error_event.encode("utf-8"))
         return

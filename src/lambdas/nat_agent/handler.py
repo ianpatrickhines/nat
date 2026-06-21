@@ -27,6 +27,17 @@ from src.lambdas.shared.subscription_middleware import (
     verify_nation_subscription,
 )
 
+try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
+    from src.lambdas.shared.session_token import (
+        SessionTokenError,
+        authenticate_request,
+    )
+except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
+    from shared.session_token import (  # type: ignore[no-redef]
+        SessionTokenError,
+        authenticate_request,
+    )
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -320,7 +331,7 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
     headers = {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type,X-Nat-User-Id,X-Nat-Nation-Slug",
+        "Access-Control-Allow-Headers": "Content-Type,Authorization",
     }
 
     try:
@@ -342,43 +353,34 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
                 "headers": headers,
             }
 
-        # Extract required fields
-        query = body.get("query")
-        user_id = body.get("user_id")
-        nation_slug = body.get("nation_slug")
-        page_context = body.get("context", {})
+        # Authenticate the caller. user_id and nation_slug are derived from the
+        # signed session-token claims, NOT from client-supplied body/header
+        # values (which are forgeable). This closes the IDOR: a token minted for
+        # nation A cannot act on nation B.
+        try:
+            session = authenticate_request(event)
+        except SessionTokenError as e:
+            logger.warning(f"Authentication failed: {e.code} - {e.message}")
+            return {
+                "statusCode": e.http_status,
+                "body": json.dumps({
+                    "error": e.message,
+                    "error_code": e.code,
+                }),
+                "headers": headers,
+            }
 
-        # Also check headers for user_id / nation_slug (middleware may have set them)
-        request_headers = event.get("headers", {}) or {}
-        if not user_id:
-            user_id = (
-                request_headers.get("X-Nat-User-Id")
-                or request_headers.get("x-nat-user-id")
-            )
-        if not nation_slug:
-            nation_slug = (
-                request_headers.get("X-Nat-Nation-Slug")
-                or request_headers.get("x-nat-nation-slug")
-            )
+        user_id = session.user_id
+        nation_slug = session.nation_slug
+
+        # Extract request payload (identity fields are ignored if present).
+        query = body.get("query")
+        page_context = body.get("context", {})
 
         if not query:
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "Missing required field: query"}),
-                "headers": headers,
-            }
-
-        if not user_id:
-            return {
-                "statusCode": 400,
-                "body": json.dumps({"error": "Missing required field: user_id"}),
-                "headers": headers,
-            }
-
-        if not nation_slug:
-            return {
-                "statusCode": 400,
-                "body": json.dumps({"error": "Missing required field: nation_slug"}),
                 "headers": headers,
             }
 

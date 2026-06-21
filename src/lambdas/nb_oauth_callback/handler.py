@@ -21,6 +21,17 @@ import boto3
 import urllib3
 from botocore.exceptions import ClientError
 
+try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
+    from src.lambdas.shared.session_token import (
+        get_session_secret,
+        mint_session_token,
+    )
+except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
+    from shared.session_token import (  # type: ignore[no-redef]
+        get_session_secret,
+        mint_session_token,
+    )
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -479,8 +490,24 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
 
         logger.info(f"Successfully connected NB for nation {nb_slug} (user {user_id})")
 
-        # Redirect to success page with nation info
-        success_url = f"{SUCCESS_REDIRECT_URL}?user_id={user_id}&nation={nb_slug}"
+        # Mint a short-lived signed session token. The extension stores this and
+        # sends it as `Authorization: Bearer` on every backend request; the
+        # backend derives user_id / nation_slug from its signed claims instead
+        # of trusting forgeable client headers.
+        session_token = mint_session_token(
+            user_id=user_id,
+            nation_slug=nb_slug,
+            secret=get_session_secret(),
+        )
+
+        # Redirect to success page with nation info and the session token. The
+        # token is delivered in the URL fragment so it is not sent to the
+        # success page's server or written to its access logs.
+        success_query = urlencode({"user_id": user_id, "nation": nb_slug})
+        success_url = (
+            f"{SUCCESS_REDIRECT_URL}?{success_query}"
+            f"#session_token={session_token}"
+        )
         return create_redirect_response(success_url)
 
     except ClientError as e:

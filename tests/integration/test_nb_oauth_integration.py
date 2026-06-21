@@ -222,6 +222,10 @@ class TestOAuthCallbackIntegration:
                 "src.lambdas.nb_oauth_callback.handler.get_secret",
                 side_effect=[TEST_CLIENT_ID, TEST_CLIENT_SECRET],
             ),
+            patch(
+                "src.lambdas.nb_oauth_callback.handler.get_session_secret",
+                return_value="test-session-secret",
+            ),
             patch("urllib3.PoolManager", return_value=mock_http),
         ):
             response = handler(event, None)
@@ -322,6 +326,10 @@ class TestOAuthCallbackIntegration:
                 "src.lambdas.nb_oauth_callback.handler.get_secret",
                 side_effect=[TEST_CLIENT_ID, TEST_CLIENT_SECRET],
             ),
+            patch(
+                "src.lambdas.nb_oauth_callback.handler.get_session_secret",
+                return_value="test-session-secret",
+            ),
             patch("urllib3.PoolManager", return_value=mock_http),
         ):
             response = handler(event, None)
@@ -367,6 +375,10 @@ class TestOAuthCallbackIntegration:
                 "src.lambdas.nb_oauth_callback.handler.get_secret",
                 side_effect=[TEST_CLIENT_ID, TEST_CLIENT_SECRET],
             ),
+            patch(
+                "src.lambdas.nb_oauth_callback.handler.get_session_secret",
+                return_value="test-session-secret",
+            ),
             patch("urllib3.PoolManager", return_value=mock_http),
         ):
             response = handler(event, None)
@@ -400,6 +412,10 @@ class TestOAuthCallbackIntegration:
             patch(
                 "src.lambdas.nb_oauth_callback.handler.get_secret",
                 side_effect=[TEST_CLIENT_ID, TEST_CLIENT_SECRET],
+            ),
+            patch(
+                "src.lambdas.nb_oauth_callback.handler.get_session_secret",
+                return_value="test-session-secret",
             ),
             patch("urllib3.PoolManager", return_value=mock_http),
         ):
@@ -509,6 +525,10 @@ class TestOAuthCallbackIntegration:
                 "src.lambdas.nb_oauth_callback.handler.get_secret",
                 side_effect=[TEST_CLIENT_ID, TEST_CLIENT_SECRET],
             ),
+            patch(
+                "src.lambdas.nb_oauth_callback.handler.get_session_secret",
+                return_value="test-session-secret",
+            ),
             patch("urllib3.PoolManager", return_value=mock_http),
         ):
             response = handler(event, None)
@@ -578,6 +598,10 @@ class TestOAuthCallbackIntegration:
             patch(
                 "src.lambdas.nb_oauth_callback.handler.get_secret",
                 side_effect=[TEST_CLIENT_ID, TEST_CLIENT_SECRET],
+            ),
+            patch(
+                "src.lambdas.nb_oauth_callback.handler.get_session_secret",
+                return_value="test-session-secret",
             ),
             patch("urllib3.PoolManager", return_value=mock_http),
         ):
