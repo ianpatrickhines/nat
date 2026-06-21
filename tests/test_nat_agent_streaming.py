@@ -247,6 +247,7 @@ class TestProcessStreamingRequest:
         assert "event: error" in events[0]
         assert "Missing required field: nation_slug" in events[0]
 
+    @patch("src.lambdas.nat_agent_streaming.handler.verify_nation_subscription")
     @patch("src.lambdas.nat_agent_streaming.handler.check_rate_limit")
     @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation")
     @patch("src.lambdas.nat_agent_streaming.handler.get_nb_tokens_by_nation")
@@ -255,11 +256,13 @@ class TestProcessStreamingRequest:
         mock_get_tokens: MagicMock,
         mock_billing: MagicMock,
         mock_rate_limit: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
         """Test that a nation without NB tokens returns NB_NOT_CONNECTED."""
         mock_get_tokens.return_value = None
         mock_billing.return_value = False
         mock_rate_limit.return_value = None
+        mock_verify.return_value = {"valid": True}
 
         async def _test() -> list[str]:
             body = {
@@ -278,15 +281,20 @@ class TestProcessStreamingRequest:
         assert "NB_NOT_CONNECTED" in events[0]
         mock_billing.assert_called_once_with(TEST_NB_SLUG)
 
+    @patch("src.lambdas.nat_agent_streaming.handler.verify_nation_subscription")
     @patch("src.lambdas.nat_agent_streaming.handler.check_rate_limit")
     @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation")
     def test_rate_limit_exceeded(
-        self, mock_billing: MagicMock, mock_rate_limit: MagicMock
+        self,
+        mock_billing: MagicMock,
+        mock_rate_limit: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
         """Test that exceeding the per-user rate limit returns an error event."""
         from src.lambdas.shared.usage_tracking import RateLimitError
 
         mock_billing.return_value = False
+        mock_verify.return_value = {"valid": True}
         mock_rate_limit.side_effect = RateLimitError(
             message="Rate limit exceeded. Please wait 3 seconds.",
             retry_after=3,
@@ -308,6 +316,7 @@ class TestProcessStreamingRequest:
         assert "event: error" in events[0]
         assert "RATE_LIMIT_EXCEEDED" in events[0]
 
+    @patch("src.lambdas.nat_agent_streaming.handler.verify_nation_subscription")
     @patch("src.lambdas.nat_agent_streaming.handler.track_query_usage_nation")
     @patch("src.lambdas.nat_agent_streaming.handler.stream_agent_response")
     @patch("src.lambdas.nat_agent_streaming.handler.get_nb_tokens_by_nation")
@@ -320,10 +329,12 @@ class TestProcessStreamingRequest:
         mock_get_tokens: MagicMock,
         mock_stream: MagicMock,
         mock_track: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
         """Test that a successful stream increments per-nation usage."""
         mock_billing.return_value = False
         mock_rate_limit.return_value = None
+        mock_verify.return_value = {"valid": True}
         mock_get_tokens.return_value = (TEST_NB_TOKEN, TEST_NB_SLUG)
         mock_track.return_value = 42
 
@@ -349,6 +360,92 @@ class TestProcessStreamingRequest:
         assert any("event: done" in event for event in events)
         # Usage is charged to the nation, keyed by the requesting user
         mock_track.assert_called_once_with(TEST_USER_ID, TEST_NB_SLUG)
+        # The subscription gate must be checked for the nation before work
+        mock_verify.assert_called_once_with(TEST_USER_ID, TEST_NB_SLUG)
+
+    @patch("src.lambdas.nat_agent_streaming.handler.get_nb_tokens_by_nation")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent_streaming.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation")
+    def test_inactive_subscription_blocked(
+        self,
+        mock_billing: MagicMock,
+        mock_verify: MagicMock,
+        mock_rate_limit: MagicMock,
+        mock_get_tokens: MagicMock,
+    ) -> None:
+        """A cancelled/past-due nation is blocked even with valid NB tokens."""
+        from src.lambdas.shared.subscription_middleware import (
+            SubscriptionError,
+            SubscriptionErrorCode,
+        )
+
+        mock_billing.return_value = False
+        mock_verify.side_effect = SubscriptionError(
+            code=SubscriptionErrorCode.SUBSCRIPTION_INACTIVE,
+            message="Nation subscription is not active (status: cancelled).",
+            http_status=402,
+        )
+
+        async def _test() -> list[str]:
+            body = {
+                "query": "test query",
+                "user_id": TEST_USER_ID,
+                "nation_slug": TEST_NB_SLUG,
+            }
+            events = []
+            async for event in process_streaming_request(body):
+                events.append(event)
+            return events
+
+        events = run_async(_test())
+        assert len(events) == 1
+        assert "event: error" in events[0]
+        assert "SUBSCRIPTION_INACTIVE" in events[0]
+        # Gate runs before NB tokens / rate limit, so neither is reached
+        mock_get_tokens.assert_not_called()
+        mock_rate_limit.assert_not_called()
+
+    @patch("src.lambdas.nat_agent_streaming.handler.get_nb_tokens_by_nation")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent_streaming.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation")
+    def test_query_limit_exceeded_blocked(
+        self,
+        mock_billing: MagicMock,
+        mock_verify: MagicMock,
+        mock_rate_limit: MagicMock,
+        mock_get_tokens: MagicMock,
+    ) -> None:
+        """A nation over its query cap is blocked with QUERY_LIMIT_EXCEEDED."""
+        from src.lambdas.shared.subscription_middleware import (
+            SubscriptionError,
+            SubscriptionErrorCode,
+        )
+
+        mock_billing.return_value = False
+        mock_verify.side_effect = SubscriptionError(
+            code=SubscriptionErrorCode.QUERY_LIMIT_EXCEEDED,
+            message="Monthly query limit exceeded.",
+            http_status=403,
+        )
+
+        async def _test() -> list[str]:
+            body = {
+                "query": "test query",
+                "user_id": TEST_USER_ID,
+                "nation_slug": TEST_NB_SLUG,
+            }
+            events = []
+            async for event in process_streaming_request(body):
+                events.append(event)
+            return events
+
+        events = run_async(_test())
+        assert len(events) == 1
+        assert "event: error" in events[0]
+        assert "QUERY_LIMIT_EXCEEDED" in events[0]
+        mock_get_tokens.assert_not_called()
 
 
 class TestHandler:
