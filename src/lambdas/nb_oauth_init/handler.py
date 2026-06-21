@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import uuid
 from typing import Any, TypedDict
 from urllib.parse import urlencode
@@ -51,6 +52,11 @@ OAUTH_CALLBACK_URL = os.environ.get("OAUTH_CALLBACK_URL", "")
 ERROR_REDIRECT_URL = os.environ.get(
     "ERROR_REDIRECT_URL", "https://natassistant.com/connection-error"
 )
+
+# NationBuilder nation slugs are lowercase alphanumeric with hyphens. We embed
+# the slug into the authorize host, so reject anything else to avoid steering
+# the redirect to an attacker-influenced host.
+NB_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
 class LambdaResponse(TypedDict):
@@ -104,6 +110,11 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
             logger.error("Missing nb_slug")
             return create_redirect_response(
                 f"{ERROR_REDIRECT_URL}?error=missing_nb_slug"
+            )
+        if not NB_SLUG_RE.match(nb_slug):
+            logger.error(f"Invalid nb_slug format: {nb_slug!r}")
+            return create_redirect_response(
+                f"{ERROR_REDIRECT_URL}?error=invalid_nb_slug"
             )
 
         if not OAUTH_CALLBACK_URL:

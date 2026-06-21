@@ -87,6 +87,20 @@ class TestInitHandler:
         assert response["statusCode"] == 302
         assert "error=missing_nb_slug" in response["headers"]["Location"]
 
+    def test_malformed_nb_slug_rejected(self) -> None:
+        """A slug that would distort the authorize host is rejected."""
+        table = MockOAuthStateTable()
+        for bad in ["evil.com/x", "Foo Bar", "slug?x=1", "-leading", "UPPER"]:
+            with ExitStack() as stack:
+                for p in _patches(table):
+                    stack.enter_context(p)
+                response = handler(
+                    {"queryStringParameters": {"nb_slug": bad}}, None
+                )
+            assert response["statusCode"] == 302
+            assert "error=invalid_nb_slug" in response["headers"]["Location"]
+        assert table.items == {}
+
     def test_missing_callback_url_misconfigured(self) -> None:
         table = MockOAuthStateTable()
         with ExitStack() as stack:
