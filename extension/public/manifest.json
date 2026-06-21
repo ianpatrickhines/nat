@@ -9,19 +9,25 @@
     "alarms"
   ],
   "host_permissions": [
-    "*://*.nationbuilder.com/*"
+    "*://*.nationbuilder.com/*",
+    "https://natassistant.com/connected*"
   ],
-  "background": {
-    "service_worker": "background.js",
-    "type": "module"
-  },
   "content_scripts": [
     {
       "matches": ["*://*.nationbuilder.com/*"],
       "js": ["content.js"],
       "css": ["content.css"]
+    },
+    {
+      "matches": ["https://natassistant.com/connected*"],
+      "js": ["oauth-callback.js"],
+      "run_at": "document_start"
     }
   ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
   "action": {
     "default_title": "Nat - NationBuilder Assistant"
   }

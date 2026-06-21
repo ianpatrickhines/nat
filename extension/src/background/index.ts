@@ -66,6 +66,16 @@ interface UndoableAction {
 type MessageType =
   | { type: 'GET_AUTH_STATE' }
   | { type: 'SET_AUTH_STATE'; authToken: string; userId: string; tenantId: string }
+  | {
+      // Sent by the OAuth-success content script after the NationBuilder connect
+      // flow completes. Carries the minted session token (JWT) plus the identity
+      // the backend bound into it. Identity here is used only for UI display; the
+      // signed token is the source of truth on every backend request.
+      type: 'SET_SESSION';
+      sessionToken: string;
+      userId: string;
+      nationSlug: string;
+    }
   | { type: 'CLEAR_AUTH_STATE' }
   | { type: 'SET_NB_CONNECTION'; nbConnected: boolean; nbNeedsReauth?: boolean }
   | { type: 'SET_SUBSCRIPTION_STATUS'; status: AuthState['subscriptionStatus'] }
@@ -103,6 +113,15 @@ type BroadcastMessage =
 
 // Streaming endpoint - Lambda Function URL for SSE (configured at build time)
 const STREAMING_URL = 'https://streaming.nat.example.com'; // Lambda Function URL for SSE
+
+// Error codes the backend returns when session-token authentication fails.
+// On any of these the stored token is invalid/expired and the user must
+// re-run the NationBuilder connect flow to mint a fresh one.
+const AUTH_FAILURE_ERROR_CODES = new Set([
+  'MISSING_TOKEN',
+  'INVALID_TOKEN',
+  'TOKEN_EXPIRED',
+]);
 
 // ============================================================================
 // State Management
@@ -216,6 +235,51 @@ async function setNationSlug(nationSlug: string | null): Promise<void> {
     } else {
       chrome.storage.local.remove('nationSlug', () => resolve());
     }
+  });
+}
+
+/**
+ * Store a freshly minted session token after the NationBuilder OAuth flow.
+ *
+ * The signed token is the credential sent on every backend request. We also
+ * persist userId/nationSlug for UI display (the slug is still re-detected from
+ * the page URL by the content script per issue #7), and mark NB connected /
+ * reauth cleared so the chat UI unblocks.
+ */
+async function setSession(
+  sessionToken: string,
+  userId: string,
+  nationSlug: string
+): Promise<void> {
+  return new Promise((resolve) => {
+    chrome.storage.local.set(
+      {
+        authToken: sessionToken,
+        userId,
+        nationSlug,
+        nbConnected: true,
+        nbNeedsReauth: false,
+      },
+      () => resolve()
+    );
+  });
+}
+
+/**
+ * Handle a backend authentication failure (expired / missing / forged token).
+ *
+ * Clears the stored token so it is never reused, and routes the user to the
+ * existing "needs reauth" UI path (which prompts them to reconnect
+ * NationBuilder, minting a new token).
+ */
+async function handleAuthFailure(): Promise<void> {
+  return new Promise((resolve) => {
+    chrome.storage.local.set(
+      { nbNeedsReauth: true, nbConnected: false },
+      () => {
+        chrome.storage.local.remove('authToken', () => resolve());
+      }
+    );
   });
 }
 
@@ -387,10 +451,16 @@ async function handleSSEEvent(event: SSEEvent): Promise<void> {
     }
 
     case 'error': {
+      const errorCode = event.data.error_code as string;
+      // Auth failure (expired/invalid token) in the SSE stream: clear the
+      // token and surface reauth, same as a 401 on the initial response.
+      if (AUTH_FAILURE_ERROR_CODES.has(errorCode)) {
+        await handleAuthFailure();
+      }
       await broadcastToNbTabs({
         type: 'STREAMING_ERROR',
         error: event.data.error as string,
-        errorCode: event.data.error_code as string,
+        errorCode,
         retryAfter: event.data.retry_after as number | undefined,
       });
       break;
@@ -485,19 +555,20 @@ async function submitQuery(request: QueryRequest): Promise<{ success: boolean; e
       });
     });
 
-    // Make streaming request to Lambda Function URL
+    // Make streaming request to Lambda Function URL.
+    //
+    // Identity (user_id / nation_slug) is NOT sent in headers or the body: the
+    // backend derives it exclusively from the verified `Authorization: Bearer`
+    // session token, which closes the IDOR. The old forgeable X-Nat-* headers
+    // and body identity fields are intentionally removed.
     const response = await fetch(STREAMING_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${authToken}`,
-        'X-Nat-User-Id': authState.userId || '',
-        'X-Nat-Nation-Slug': authState.nationSlug || '',
       },
       body: JSON.stringify({
         query: request.query,
-        user_id: authState.userId,
-        nation_slug: authState.nationSlug,
         context: request.context || {},
         confirmed_tools: streamingState.confirmedTools,
         undo_stack: request.undoStack || [],
@@ -510,12 +581,23 @@ async function submitQuery(request: QueryRequest): Promise<{ success: boolean; e
       streamingState.isStreaming = false;
       streamingState.abortController = null;
 
-      // Map HTTP status to error codes
-      let errorCode = 'API_ERROR';
-      if (response.status === 402) errorCode = 'PAYMENT_REQUIRED';
-      else if (response.status === 403) errorCode = 'FORBIDDEN';
-      else if (response.status === 404) errorCode = 'NATION_NOT_FOUND';
-      else if (response.status === 429) errorCode = 'RATE_LIMIT_EXCEEDED';
+      // Prefer the backend's structured error_code (e.g. auth failures), then
+      // fall back to mapping the HTTP status to a code.
+      const backendCode = (errorData as { error_code?: string }).error_code;
+      let errorCode = backendCode || 'API_ERROR';
+      if (!backendCode) {
+        if (response.status === 401) errorCode = 'INVALID_TOKEN';
+        else if (response.status === 402) errorCode = 'PAYMENT_REQUIRED';
+        else if (response.status === 403) errorCode = 'FORBIDDEN';
+        else if (response.status === 404) errorCode = 'NATION_NOT_FOUND';
+        else if (response.status === 429) errorCode = 'RATE_LIMIT_EXCEEDED';
+      }
+
+      // On auth failure, clear the stored token and surface reauth so the user
+      // reconnects NationBuilder (minting a fresh token).
+      if (response.status === 401 || AUTH_FAILURE_ERROR_CODES.has(errorCode)) {
+        await handleAuthFailure();
+      }
 
       await broadcastToNbTabs({
         type: 'STREAMING_ERROR',
@@ -645,6 +727,13 @@ chrome.runtime.onMessage.addListener((
 
     case 'SET_AUTH_STATE': {
       setAuthState(message.authToken, message.userId, message.tenantId)
+        .then(() => notifyAuthStateChanged())
+        .then(() => sendResponse({ success: true }));
+      return true;
+    }
+
+    case 'SET_SESSION': {
+      setSession(message.sessionToken, message.userId, message.nationSlug)
         .then(() => notifyAuthStateChanged())
         .then(() => sendResponse({ success: true }));
       return true;

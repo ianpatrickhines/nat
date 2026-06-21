@@ -17,6 +17,7 @@ from src.lambdas.nat_agent.handler import (
     get_user_info,
     handler,
 )
+from src.lambdas.shared.session_token import mint_session_token
 
 
 # Test data
@@ -26,16 +27,34 @@ TEST_NATION_SLUG = "testnation"
 TEST_NB_SLUG = "testnation"
 TEST_NB_TOKEN = "nb_test_token_abc123"
 TEST_API_KEY = "sk-ant-test-key"
+TEST_JWT_SECRET = "test-session-secret"
+
+
+def bearer(
+    user_id: str = TEST_USER_ID,
+    nation_slug: str = TEST_NATION_SLUG,
+    secret: str = TEST_JWT_SECRET,
+) -> str:
+    """Build an `Authorization: Bearer <jwt>` header value for tests."""
+    return f"Bearer {mint_session_token(user_id, nation_slug, secret)}"
 
 
 def create_api_event(
     body: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Create a mock API Gateway event."""
+    """
+    Create a mock API Gateway event.
+
+    When ``headers`` is not provided, a valid session-token Authorization header
+    for the default test user/nation is injected so most handler tests exercise
+    the post-authentication path. Pass ``headers={}`` to omit it.
+    """
+    if headers is None:
+        headers = {"Authorization": bearer()}
     return {
         "body": json.dumps(body) if body else "",
-        "headers": headers or {},
+        "headers": headers,
         "httpMethod": "POST",
         "path": "/agent/query",
     }
@@ -255,6 +274,15 @@ class TestGetUserInfo:
 class TestHandler:
     """Tests for the main Lambda handler (per-nation architecture)."""
 
+    @pytest.fixture(autouse=True)
+    def _patch_session_secret(self) -> Any:
+        """Use a deterministic signing secret for session-token verification."""
+        with patch(
+            "src.lambdas.shared.session_token.get_session_secret",
+            return_value=TEST_JWT_SECRET,
+        ):
+            yield
+
     def _valid_body(self, **overrides: Any) -> dict[str, Any]:
         """Build a request body with all required per-nation fields."""
         body: dict[str, Any] = {
@@ -298,29 +326,55 @@ class TestHandler:
         body = json.loads(response["body"])
         assert "query" in body["error"]
 
-    def test_missing_user_id(self) -> None:
-        """Test that missing user_id returns 400."""
-        event = create_api_event(body={
-            "query": "test query",
-            "nation_slug": TEST_NATION_SLUG,
-        })
+    def test_missing_token_returns_401(self) -> None:
+        """A request with no Authorization header is rejected with 401."""
+        event = create_api_event(body=self._valid_body(), headers={})
         response = handler(event, None)
 
-        assert response["statusCode"] == 400
+        assert response["statusCode"] == 401
         body = json.loads(response["body"])
-        assert "user_id" in body["error"]
+        assert body["error_code"] == "MISSING_TOKEN"
 
-    def test_missing_nation_slug(self) -> None:
-        """Test that missing nation_slug returns 400."""
-        event = create_api_event(body={
-            "query": "test query",
-            "user_id": TEST_USER_ID,
-        })
+    def test_forged_token_returns_401(self) -> None:
+        """A token signed with the wrong secret is rejected with 401."""
+        event = create_api_event(
+            body=self._valid_body(),
+            headers={"Authorization": bearer(secret="attacker-secret")},
+        )
         response = handler(event, None)
 
-        assert response["statusCode"] == 400
+        assert response["statusCode"] == 401
         body = json.loads(response["body"])
-        assert "nation_slug" in body["error"]
+        assert body["error_code"] == "INVALID_TOKEN"
+
+    def test_tampered_token_returns_401(self) -> None:
+        """Flipping a character in a valid token invalidates the signature."""
+        token = mint_session_token(TEST_USER_ID, TEST_NATION_SLUG, TEST_JWT_SECRET)
+        # Corrupt the payload segment.
+        header_seg, payload_seg, sig = token.split(".")
+        tampered = f"{header_seg}.{payload_seg[:-1]}{'A' if payload_seg[-1] != 'A' else 'B'}.{sig}"
+        event = create_api_event(
+            body=self._valid_body(),
+            headers={"Authorization": f"Bearer {tampered}"},
+        )
+        response = handler(event, None)
+
+        assert response["statusCode"] == 401
+
+    def test_expired_token_returns_401(self) -> None:
+        """An expired token is rejected with 401."""
+        expired = mint_session_token(
+            TEST_USER_ID, TEST_NATION_SLUG, TEST_JWT_SECRET, ttl_seconds=-10
+        )
+        event = create_api_event(
+            body=self._valid_body(),
+            headers={"Authorization": f"Bearer {expired}"},
+        )
+        response = handler(event, None)
+
+        assert response["statusCode"] == 401
+        body = json.loads(response["body"])
+        assert body["error_code"] == "TOKEN_EXPIRED"
 
     @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
@@ -492,52 +546,56 @@ class TestHandler:
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
     @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
     @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
-    def test_ids_from_headers(
+    def test_forged_headers_are_ignored_idor_closed(
         self,
         mock_get_tokens: MagicMock,
         mock_billing: MagicMock,
         mock_rate: MagicMock,
         mock_verify: MagicMock,
     ) -> None:
-        """Test that user_id and nation_slug can be supplied via headers."""
+        """
+        IDOR closure: a valid token for nation A cannot be used to act on
+        nation B by supplying forged X-Nat-* headers. Identity comes from the
+        token claims only.
+        """
         mock_get_tokens.return_value = None  # Stop after token lookup
 
         event = create_api_event(
-            body={"query": "test query"},
+            body={"query": "test query", "nation_slug": "victim-nation"},
             headers={
-                "X-Nat-User-Id": TEST_USER_ID,
-                "X-Nat-Nation-Slug": TEST_NATION_SLUG,
+                "Authorization": bearer(TEST_USER_ID, TEST_NATION_SLUG),
+                # Attacker tries to target another nation via legacy headers.
+                "X-Nat-User-Id": "attacker",
+                "X-Nat-Nation-Slug": "victim-nation",
             },
         )
         response = handler(event, None)
 
-        # Reaches per-nation token lookup, then returns NB_NOT_CONNECTED
         assert response["statusCode"] == 403
         body = json.loads(response["body"])
         assert body["error_code"] == "NB_NOT_CONNECTED"
+        # The token's nation is used, NOT the forged header/body nation.
         mock_get_tokens.assert_called_once_with(TEST_NATION_SLUG)
         mock_billing.assert_called_once_with(TEST_NATION_SLUG)
+        mock_verify.assert_called_once_with(TEST_USER_ID, TEST_NATION_SLUG)
 
     @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
     @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
     @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
-    def test_ids_from_lowercase_headers(
+    def test_body_nation_slug_is_ignored(
         self,
         mock_get_tokens: MagicMock,
         mock_billing: MagicMock,
         mock_rate: MagicMock,
         mock_verify: MagicMock,
     ) -> None:
-        """Test that lowercase headers are honored for user_id and nation_slug."""
+        """A nation_slug in the request body cannot override the token claim."""
         mock_get_tokens.return_value = None
 
         event = create_api_event(
-            body={"query": "test query"},
-            headers={
-                "x-nat-user-id": TEST_USER_ID,
-                "x-nat-nation-slug": TEST_NATION_SLUG,
-            },
+            body={"query": "test query", "nation_slug": "other-nation"},
+            headers={"Authorization": bearer(TEST_USER_ID, TEST_NATION_SLUG)},
         )
         response = handler(event, None)
 
@@ -609,10 +667,10 @@ class TestHandler:
         mock_get_tokens.assert_not_called()
 
     def test_cors_headers_present(self) -> None:
-        """Test that CORS headers advertise the nation slug header."""
+        """Test that CORS headers advertise the Authorization header."""
         event = create_api_event(body=None)
         response = handler(event, None)
 
         assert "Access-Control-Allow-Origin" in response["headers"]
         assert response["headers"]["Access-Control-Allow-Origin"] == "*"
-        assert "X-Nat-Nation-Slug" in response["headers"]["Access-Control-Allow-Headers"]
+        assert "Authorization" in response["headers"]["Access-Control-Allow-Headers"]

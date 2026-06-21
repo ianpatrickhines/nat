@@ -388,6 +388,10 @@ class TestHandler:
                 "src.lambdas.nb_oauth_callback.handler.get_secret",
                 side_effect=[TEST_CLIENT_ID, TEST_CLIENT_SECRET],
             ),
+            patch(
+                "src.lambdas.nb_oauth_callback.handler.get_session_secret",
+                return_value="test-session-secret",
+            ),
             patch("urllib3.PoolManager", return_value=mock_http),
         ):
             response = handler(event, None)
@@ -395,6 +399,8 @@ class TestHandler:
         assert response["statusCode"] == 302
         assert "connected" in response["headers"]["Location"].lower()
         assert TEST_USER_ID in response["headers"]["Location"]
+        # A signed session token is returned to the extension via the fragment.
+        assert "#session_token=" in response["headers"]["Location"]
 
         # Verify nation connection record was created/updated
         assert len(nations_table.put_calls) == 1

@@ -17,6 +17,7 @@ from src.lambdas.nat_agent_streaming.handler import (
     get_nb_tokens,
     get_user_info,
     handler,
+    authenticated_body,
     process_streaming_request,
     _get_undo_instruction,
     SSE_EVENT_TEXT,
@@ -25,6 +26,7 @@ from src.lambdas.nat_agent_streaming.handler import (
     SSE_EVENT_ERROR,
     SSE_EVENT_DONE,
 )
+from src.lambdas.shared.session_token import mint_session_token
 
 
 def run_async(coro: Any) -> Any:
@@ -36,8 +38,19 @@ def run_async(coro: Any) -> Any:
 TEST_USER_ID = "user-test-12345"
 TEST_TENANT_ID = "tenant-test-67890"
 TEST_NB_SLUG = "testnation"
+TEST_NATION_SLUG = "testnation"
 TEST_NB_TOKEN = "nb_test_token_abc123"
 TEST_API_KEY = "sk-ant-test-key"
+TEST_JWT_SECRET = "test-session-secret"
+
+
+def bearer(
+    user_id: str = TEST_USER_ID,
+    nation_slug: str = TEST_NATION_SLUG,
+    secret: str = TEST_JWT_SECRET,
+) -> str:
+    """Build an `Authorization: Bearer <jwt>` header value for tests."""
+    return f"Bearer {mint_session_token(user_id, nation_slug, secret)}"
 
 
 def create_lambda_url_event(
@@ -451,6 +464,15 @@ class TestProcessStreamingRequest:
 class TestHandler:
     """Tests for the main Lambda handler."""
 
+    @pytest.fixture(autouse=True)
+    def _patch_session_secret(self) -> Any:
+        """Use a deterministic signing secret for session-token verification."""
+        with patch(
+            "src.lambdas.shared.session_token.get_session_secret",
+            return_value=TEST_JWT_SECRET,
+        ):
+            yield
+
     def test_empty_body(self) -> None:
         """Test that empty request body returns 400."""
         event = create_lambda_url_event(body=None)
@@ -487,7 +509,10 @@ class TestHandler:
         )
         mock_asyncio.get_event_loop.return_value = mock_event_loop
 
-        event = create_lambda_url_event(body={"user_id": TEST_USER_ID})
+        event = create_lambda_url_event(
+            body={"user_id": TEST_USER_ID},
+            headers={"Authorization": bearer()},
+        )
         response = handler(event, None)
 
         assert response["headers"]["Content-Type"] == "text/event-stream"
@@ -521,10 +546,13 @@ class TestHandler:
         mock_event_loop.run_until_complete.return_value = expected_events
         mock_asyncio.get_event_loop.return_value = mock_event_loop
 
-        event = create_lambda_url_event(body={
-            "query": "test query",
-            "user_id": TEST_USER_ID,
-        })
+        event = create_lambda_url_event(
+            body={
+                "query": "test query",
+                "user_id": TEST_USER_ID,
+            },
+            headers={"Authorization": bearer()},
+        )
         response = handler(event, None)
 
         assert response["statusCode"] == 200
@@ -552,7 +580,7 @@ class TestHandler:
             event = {
                 "body": encoded_body,
                 "isBase64Encoded": True,
-                "headers": {},
+                "headers": {"Authorization": bearer()},
             }
 
             with patch("src.lambdas.nat_agent_streaming.handler.asyncio") as mock_asyncio:
@@ -714,3 +742,65 @@ class TestUndoFunctionality:
             original_tool_name="create_signup"
         )
         assert result == "This action cannot be undone"
+
+
+class TestStreamingAuthentication:
+    """Authentication / IDOR-closure tests for the streaming entrypoint."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_session_secret(self) -> Any:
+        with patch(
+            "src.lambdas.shared.session_token.get_session_secret",
+            return_value=TEST_JWT_SECRET,
+        ):
+            yield
+
+    def test_missing_token_returns_401(self) -> None:
+        """No Authorization header -> 401 before any work."""
+        event = create_lambda_url_event(
+            body={"query": "hi", "user_id": TEST_USER_ID},
+            headers={},
+        )
+        response = handler(event, None)
+        assert response["statusCode"] == 401
+        body = json.loads(response["body"])
+        assert body["error_code"] == "MISSING_TOKEN"
+
+    def test_forged_token_returns_401(self) -> None:
+        """A token signed with the wrong secret -> 401."""
+        event = create_lambda_url_event(
+            body={"query": "hi"},
+            headers={"Authorization": bearer(secret="attacker-secret")},
+        )
+        response = handler(event, None)
+        assert response["statusCode"] == 401
+
+    def test_expired_token_returns_401(self) -> None:
+        expired = mint_session_token(
+            TEST_USER_ID, TEST_NATION_SLUG, TEST_JWT_SECRET, ttl_seconds=-5
+        )
+        event = create_lambda_url_event(
+            body={"query": "hi"},
+            headers={"Authorization": f"Bearer {expired}"},
+        )
+        response = handler(event, None)
+        assert response["statusCode"] == 401
+        body = json.loads(response["body"])
+        assert body["error_code"] == "TOKEN_EXPIRED"
+
+    def test_authenticated_body_overrides_client_identity(self) -> None:
+        """authenticated_body derives identity from the token, not the body."""
+        event = create_lambda_url_event(
+            body={"query": "hi"},
+            headers={"Authorization": bearer("real-user", "real-nation")},
+        )
+        body = {
+            "query": "hi",
+            "user_id": "attacker",
+            "nation_slug": "victim-nation",
+        }
+        result = authenticated_body(event, body)
+        assert result["user_id"] == "real-user"
+        assert result["nation_slug"] == "real-nation"
+        # The original body dict is not mutated.
+        assert body["nation_slug"] == "victim-nation"

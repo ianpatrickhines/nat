@@ -103,9 +103,44 @@ export async function setAuthState(
   const backgroundPage = await getBackgroundPage(context, extensionId);
 
   await backgroundPage.evaluate(async (state) => {
-    await chrome.storage.local.set({ authState: state });
-    // Also send message to notify any listeners
-    chrome.runtime.sendMessage({ type: 'AUTH_STATE_CHANGED', authState: state });
+    // Persist the individual keys the background's getAuthState() actually
+    // reads. Authentication is now token-based: an authenticated state must
+    // carry an `authToken` (the session JWT) sent as `Authorization: Bearer`.
+    const TEST_SESSION_TOKEN = 'test.session.token';
+    if (state.isAuthenticated) {
+      await chrome.storage.local.set({
+        authToken: TEST_SESSION_TOKEN,
+        userId: state.userId ?? null,
+        tenantId: state.tenantId ?? null,
+        nationSlug: state.nationSlug ?? null,
+        nbConnected: !!state.nbConnected,
+        nbNeedsReauth: !!state.nbNeedsReauth,
+        subscriptionStatus: state.subscriptionStatus ?? null,
+      });
+    } else {
+      await chrome.storage.local.remove([
+        'authToken',
+        'userId',
+        'tenantId',
+        'nationSlug',
+        'nbConnected',
+        'nbNeedsReauth',
+        'subscriptionStatus',
+      ]);
+    }
+
+    // Build the auth-state shape the UI listens for and broadcast it so any
+    // mounted components update immediately (mirrors notifyAuthStateChanged).
+    const authState = {
+      isAuthenticated: !!state.isAuthenticated,
+      userId: state.userId ?? null,
+      tenantId: state.tenantId ?? null,
+      nationSlug: state.nationSlug ?? null,
+      nbConnected: !!state.nbConnected,
+      nbNeedsReauth: !!state.nbNeedsReauth,
+      subscriptionStatus: state.subscriptionStatus ?? null,
+    };
+    chrome.runtime.sendMessage({ type: 'AUTH_STATE_CHANGED', authState });
   }, authState);
 }
 
@@ -126,6 +161,26 @@ export async function setTutorialCompleted(
       await chrome.storage.local.remove('nat_tutorial_completed');
     }
   }, completed);
+}
+
+/**
+ * Read a value from the extension's chrome.storage.local (via the background
+ * service worker context). Useful for asserting that the token handoff and
+ * auth-failure clearing wrote the expected keys.
+ */
+export async function getStorageValue<T = unknown>(
+  context: BrowserContext,
+  extensionId: string,
+  key: string
+): Promise<T | undefined> {
+  const backgroundPage = await getBackgroundPage(context, extensionId);
+  return backgroundPage.evaluate(
+    (k) =>
+      new Promise((resolve) => {
+        chrome.storage.local.get([k], (result) => resolve(result[k]));
+      }),
+    key
+  ) as Promise<T | undefined>;
 }
 
 /**

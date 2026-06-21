@@ -19,6 +19,11 @@ from typing import Any, TypedDict
 import boto3
 from botocore.exceptions import ClientError
 
+from .session_token import (
+    SessionTokenError,
+    authenticate_request,
+)
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -106,7 +111,11 @@ def get_dynamodb_resource() -> Any:
 
 def extract_nation_from_headers(headers: dict[str, str]) -> NationContext:
     """
-    Extract user and nation identity from request headers.
+    DEPRECATED: Extract user and nation identity from request headers.
+
+    These ``X-Nat-*`` headers are client-supplied and forgeable. New code must
+    use :func:`extract_nation_from_session`, which derives identity from a
+    signed session token. Retained only for backwards compatibility.
 
     Headers:
     - X-Nat-User-Id: Required user identifier (for rate limiting)
@@ -133,6 +142,28 @@ def extract_nation_from_headers(headers: dict[str, str]) -> NationContext:
         )
 
     return NationContext(user_id=user_id, nation_slug=nation_slug)
+
+
+def extract_nation_from_session(event: dict[str, Any]) -> NationContext:
+    """
+    Extract user and nation identity from the verified session token.
+
+    Unlike :func:`extract_nation_from_headers`, identity here comes from the
+    signed token claims (``Authorization: Bearer``), so a caller cannot forge a
+    ``nation_slug`` to access another nation's data (closes IDOR).
+
+    Raises:
+        SubscriptionError: With http_status 401 if authentication fails.
+    """
+    try:
+        session = authenticate_request(event)
+    except SessionTokenError as e:
+        raise SubscriptionError(
+            code=SubscriptionErrorCode.MISSING_USER_ID,
+            message=e.message,
+            http_status=e.http_status,
+        )
+    return NationContext(user_id=session.user_id, nation_slug=session.nation_slug)
 
 
 def get_nation_subscription(nation_slug: str) -> dict[str, Any]:
@@ -518,8 +549,9 @@ class NationSubscriptionMiddleware:
         Raises:
             SubscriptionError: If verification fails
         """
-        headers = event.get("headers", {}) or {}
-        nation_context = extract_nation_from_headers(headers)
+        # Identity is derived from the verified session token, not from
+        # client-supplied X-Nat-* headers (which are forgeable).
+        nation_context = extract_nation_from_session(event)
 
         return verify_nation_subscription(
             user_id=nation_context.user_id,
