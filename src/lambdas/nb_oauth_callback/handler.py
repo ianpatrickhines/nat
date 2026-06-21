@@ -504,8 +504,11 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         # token is delivered in the URL fragment so it is not sent to the
         # success page's server or written to its access logs.
         success_query = urlencode({"user_id": user_id, "nation": nb_slug})
+        # SUCCESS_REDIRECT_URL may already carry a query string (e.g. ?env=prod),
+        # so pick the correct separator to avoid a malformed double "?".
+        separator = "&" if "?" in SUCCESS_REDIRECT_URL else "?"
         success_url = (
-            f"{SUCCESS_REDIRECT_URL}?{success_query}"
+            f"{SUCCESS_REDIRECT_URL}{separator}{success_query}"
             f"#session_token={session_token}"
         )
         return create_redirect_response(success_url)
