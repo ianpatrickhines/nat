@@ -31,6 +31,7 @@ try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
         get_session_secret,
         mint_session_token,
     )
+    from src.lambdas.shared.observability import capture_exception, init_sentry
 except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
     from shared.oauth_state import (  # type: ignore[no-redef]
         OAuthStateError,
@@ -39,6 +40,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
     from shared.session_token import (  # type: ignore[no-redef]
         get_session_secret,
         mint_session_token,
+    )
+    from shared.observability import (  # type: ignore[no-redef]
+        capture_exception,
+        init_sentry,
     )
 
 logger = logging.getLogger()
@@ -421,6 +426,8 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         "Access-Control-Allow-Origin": "*",
     }
 
+    init_sentry()
+
     try:
         # Extract query parameters
         query_params = event.get("queryStringParameters") or {}
@@ -548,9 +555,11 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
 
     except ClientError as e:
         logger.error(f"AWS service error: {e}")
+        capture_exception(e)
         error_url = f"{ERROR_REDIRECT_URL}?error=service_error"
         return create_redirect_response(error_url)
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+        capture_exception(e)
         error_url = f"{ERROR_REDIRECT_URL}?error=unexpected"
         return create_redirect_response(error_url)

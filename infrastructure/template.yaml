@@ -11,11 +11,29 @@ Parameters:
       - prod
     Description: Deployment environment
 
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional email address subscribed to the CloudWatch alarm SNS topic.
+      Leave blank to create the topic without an email subscription.
+
+  SentryDsnSecretName:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional Secrets Manager secret name holding the Sentry DSN. When set,
+      Lambda handlers initialise Sentry error tracking; when blank, error
+      tracking is a no-op.
+
   # Placeholder for future custom domain support - not wired up yet
   # CustomDomainName:
   #   Type: String
   #   Default: ''
   #   Description: Optional custom domain name for the API (e.g., api.natassistant.com)
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
 
 Resources:
   # =============================================================================
@@ -365,6 +383,8 @@ Resources:
           USERS_TABLE: !Ref UsersTable
           STRIPE_EVENTS_TABLE: !Ref StripeEventsTable
           STRIPE_WEBHOOK_SECRET_NAME: !Sub 'nat/stripe-webhook-secret-${Environment}'
+          ENVIRONMENT: !Ref Environment
+          SENTRY_DSN_SECRET: !Ref SentryDsnSecretName
       Tags:
         - Key: Environment
           Value: !Ref Environment
@@ -403,6 +423,8 @@ Resources:
           STRIPE_PRICE_STARTER: !Sub 'price_starter_${Environment}'
           STRIPE_PRICE_TEAM: !Sub 'price_team_${Environment}'
           STRIPE_PRICE_ORG: !Sub 'price_org_${Environment}'
+          ENVIRONMENT: !Ref Environment
+          SENTRY_DSN_SECRET: !Ref SentryDsnSecretName
       Tags:
         - Key: Environment
           Value: !Ref Environment
@@ -445,6 +467,8 @@ Resources:
           SESSION_JWT_SECRET_NAME: !Sub 'nat/session-jwt-secret-${Environment}'
           SUCCESS_REDIRECT_URL: !Sub 'https://natassistant.com/connected?env=${Environment}'
           ERROR_REDIRECT_URL: !Sub 'https://natassistant.com/connection-error?env=${Environment}'
+          ENVIRONMENT: !Ref Environment
+          SENTRY_DSN_SECRET: !Ref SentryDsnSecretName
       Tags:
         - Key: Environment
           Value: !Ref Environment
@@ -521,6 +545,8 @@ Resources:
           NB_CLIENT_ID_SECRET: !Sub 'nat/nb-client-id-${Environment}'
           NB_CLIENT_SECRET_SECRET: !Sub 'nat/nb-client-secret-${Environment}'
           TOKEN_EXPIRY_WINDOW_HOURS: '12'
+          ENVIRONMENT: !Ref Environment
+          SENTRY_DSN_SECRET: !Ref SentryDsnSecretName
       Tags:
         - Key: Environment
           Value: !Ref Environment
@@ -828,6 +854,8 @@ Resources:
           ANTHROPIC_API_KEY_SECRET: !Sub 'nat/anthropic-api-key-${Environment}'
           SESSION_JWT_SECRET_NAME: !Sub 'nat/session-jwt-secret-${Environment}'
           CLAUDE_MODEL: 'claude-haiku-4-5-20251001'
+          ENVIRONMENT: !Ref Environment
+          SENTRY_DSN_SECRET: !Ref SentryDsnSecretName
       Tags:
         - Key: Environment
           Value: !Ref Environment
@@ -934,6 +962,8 @@ Resources:
           ANTHROPIC_API_KEY_SECRET: !Sub 'nat/anthropic-api-key-${Environment}'
           SESSION_JWT_SECRET_NAME: !Sub 'nat/session-jwt-secret-${Environment}'
           CLAUDE_MODEL: 'claude-haiku-4-5-20251001'
+          ENVIRONMENT: !Ref Environment
+          SENTRY_DSN_SECRET: !Ref SentryDsnSecretName
       Tags:
         - Key: Environment
           Value: !Ref Environment
@@ -1006,6 +1036,225 @@ Resources:
           Value: !Ref Environment
         - Key: Project
           Value: nat
+
+  # =============================================================================
+  # Observability - SNS alarm topic, CloudWatch alarms, dashboard
+  # =============================================================================
+  # Custom metrics are emitted by the Lambda handlers via the CloudWatch
+  # Embedded Metric Format (EMF) into the "Nat" namespace with an "Environment"
+  # dimension. Metric names must stay in sync with src/lambdas/shared/metrics.py.
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'nat-alarms-${Environment}'
+      DisplayName: !Sub 'Nat Alarms (${Environment})'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  # Elevated agent error rate (custom AgentError metric).
+  AgentErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'nat-agent-errors-${Environment}'
+      AlarmDescription: Elevated Nat agent error rate
+      Namespace: Nat
+      MetricName: AgentError
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  # Spike in "nation not found" lookups (custom NationNotFound metric).
+  NationNotFoundAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'nat-nation-not-found-${Environment}'
+      AlarmDescription: Spike in nation-not-found subscription lookups
+      Namespace: Nat
+      MetricName: NationNotFound
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  # Token-refresh failures (custom TokenRefreshFailure metric).
+  TokenRefreshFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'nat-token-refresh-failures-${Environment}'
+      AlarmDescription: NationBuilder token refresh failures
+      Namespace: Nat
+      MetricName: TokenRefreshFailure
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  # Stripe webhook processing failures (custom StripeWebhookFailure metric).
+  StripeWebhookFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'nat-stripe-webhook-failures-${Environment}'
+      AlarmDescription: Stripe webhook processing failures
+      Namespace: Nat
+      MetricName: StripeWebhookFailure
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  # Built-in Lambda runtime errors for the agent function (catches crashes /
+  # unhandled exceptions that never reach a custom metric).
+  AgentLambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'nat-agent-lambda-errors-${Environment}'
+      AlarmDescription: Unhandled errors in the Nat agent Lambda
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref NatAgentFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  StreamingLambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'nat-agent-streaming-lambda-errors-${Environment}'
+      AlarmDescription: Unhandled errors in the Nat streaming agent Lambda
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref NatAgentStreamingFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  ObservabilityDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub 'nat-observability-${Environment}'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Subscription & access",
+                "region": "${AWS::Region}",
+                "stat": "Sum",
+                "period": 300,
+                "metrics": [
+                  [ "Nat", "SubscriptionVerification", "Environment", "${Environment}" ],
+                  [ "Nat", "SubscriptionVerificationFailure", "Environment", "${Environment}" ],
+                  [ "Nat", "QueryLimitHit", "Environment", "${Environment}" ],
+                  [ "Nat", "NationNotFound", "Environment", "${Environment}" ]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Errors",
+                "region": "${AWS::Region}",
+                "stat": "Sum",
+                "period": 300,
+                "metrics": [
+                  [ "Nat", "AgentError", "Environment", "${Environment}" ],
+                  [ "Nat", "NBApiError", "Environment", "${Environment}" ],
+                  [ "Nat", "TokenRefreshFailure", "Environment", "${Environment}" ],
+                  [ "Nat", "StripeWebhookFailure", "Environment", "${Environment}" ]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Prompt cache effectiveness",
+                "region": "${AWS::Region}",
+                "stat": "Sum",
+                "period": 300,
+                "metrics": [
+                  [ "Nat", "CacheReadInputTokens", "Environment", "${Environment}" ],
+                  [ "Nat", "CacheCreationInputTokens", "Environment", "${Environment}" ],
+                  [ "Nat", "CacheHit", "Environment", "${Environment}" ],
+                  [ "Nat", "CacheMiss", "Environment", "${Environment}" ]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Agent latency (ms)",
+                "region": "${AWS::Region}",
+                "period": 300,
+                "metrics": [
+                  [ "Nat", "AgentLatencyMs", "Environment", "${Environment}", { "stat": "Average" } ],
+                  [ "Nat", "AgentLatencyMs", "Environment", "${Environment}", { "stat": "p90" } ]
+                ]
+              }
+            }
+          ]
+        }
 
 Outputs:
   NationsTableName:

@@ -23,6 +23,16 @@ from typing import Any, TypedDict
 import boto3
 from botocore.exceptions import ClientError
 
+try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
+    from src.lambdas.shared import metrics
+    from src.lambdas.shared.observability import capture_exception, init_sentry
+except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
+    from shared import metrics  # type: ignore[no-redef]
+    from shared.observability import (  # type: ignore[no-redef]
+        capture_exception,
+        init_sentry,
+    )
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -492,6 +502,8 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         "Access-Control-Allow-Origin": "*",
     }
 
+    init_sentry()
+
     try:
         # Get request body and signature
         body = event.get("body", "")
@@ -575,6 +587,8 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         }
     except ClientError as e:
         logger.error(f"AWS service error: {e}")
+        metrics.emit_count(metrics.STRIPE_WEBHOOK_FAILURE, {"reason": "aws_error"})
+        capture_exception(e)
         return {
             "statusCode": 500,
             "body": json.dumps({"error": "Internal server error"}),
@@ -582,6 +596,8 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         }
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+        metrics.emit_count(metrics.STRIPE_WEBHOOK_FAILURE, {"reason": "processing_error"})
+        capture_exception(e)
         return {
             "statusCode": 500,
             "body": json.dumps({"error": "Internal server error"}),

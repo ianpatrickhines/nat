@@ -110,25 +110,37 @@ jobs:
           # Create deployment package for each Lambda
           mkdir -p .lambda-packages
 
-          # Package stripe_webhook
-          cd src/lambdas/stripe_webhook
-          zip -r ../../../.lambda-packages/stripe_webhook.zip .
-          cd ../../..
+          # Package stripe_webhook (includes shared modules for metrics/observability)
+          mkdir -p .lambda-packages/stripe_webhook_pkg
+          cp -r src/lambdas/stripe_webhook/* .lambda-packages/stripe_webhook_pkg/
+          cp -r src/lambdas/shared .lambda-packages/stripe_webhook_pkg/
+          cd .lambda-packages/stripe_webhook_pkg
+          zip -r ../stripe_webhook.zip .
+          cd ../..
 
-          # Package stripe_checkout
-          cd src/lambdas/stripe_checkout
-          zip -r ../../../.lambda-packages/stripe_checkout.zip .
-          cd ../../..
+          # Package stripe_checkout (includes shared modules for metrics/observability)
+          mkdir -p .lambda-packages/stripe_checkout_pkg
+          cp -r src/lambdas/stripe_checkout/* .lambda-packages/stripe_checkout_pkg/
+          cp -r src/lambdas/shared .lambda-packages/stripe_checkout_pkg/
+          cd .lambda-packages/stripe_checkout_pkg
+          zip -r ../stripe_checkout.zip .
+          cd ../..
 
-          # Package nb_oauth_callback
-          cd src/lambdas/nb_oauth_callback
-          zip -r ../../../.lambda-packages/nb_oauth_callback.zip .
-          cd ../../..
+          # Package nb_oauth_callback (includes shared modules for session token + observability)
+          mkdir -p .lambda-packages/nb_oauth_callback_pkg
+          cp -r src/lambdas/nb_oauth_callback/* .lambda-packages/nb_oauth_callback_pkg/
+          cp -r src/lambdas/shared .lambda-packages/nb_oauth_callback_pkg/
+          cd .lambda-packages/nb_oauth_callback_pkg
+          zip -r ../nb_oauth_callback.zip .
+          cd ../..
 
-          # Package token_refresh
-          cd src/lambdas/token_refresh
-          zip -r ../../../.lambda-packages/token_refresh.zip .
-          cd ../../..
+          # Package token_refresh (includes shared modules for metrics/observability)
+          mkdir -p .lambda-packages/token_refresh_pkg
+          cp -r src/lambdas/token_refresh/* .lambda-packages/token_refresh_pkg/
+          cp -r src/lambdas/shared .lambda-packages/token_refresh_pkg/
+          cd .lambda-packages/token_refresh_pkg
+          zip -r ../token_refresh.zip .
+          cd ../..
 
           # Package nat_agent (includes shared modules and nat source)
           mkdir -p .lambda-packages/nat_agent_staging
@@ -222,25 +234,37 @@ jobs:
           # Create deployment package for each Lambda
           mkdir -p .lambda-packages
 
-          # Package stripe_webhook
-          cd src/lambdas/stripe_webhook
-          zip -r ../../../.lambda-packages/stripe_webhook.zip .
-          cd ../../..
+          # Package stripe_webhook (includes shared modules for metrics/observability)
+          mkdir -p .lambda-packages/stripe_webhook_pkg
+          cp -r src/lambdas/stripe_webhook/* .lambda-packages/stripe_webhook_pkg/
+          cp -r src/lambdas/shared .lambda-packages/stripe_webhook_pkg/
+          cd .lambda-packages/stripe_webhook_pkg
+          zip -r ../stripe_webhook.zip .
+          cd ../..
 
-          # Package stripe_checkout
-          cd src/lambdas/stripe_checkout
-          zip -r ../../../.lambda-packages/stripe_checkout.zip .
-          cd ../../..
+          # Package stripe_checkout (includes shared modules for metrics/observability)
+          mkdir -p .lambda-packages/stripe_checkout_pkg
+          cp -r src/lambdas/stripe_checkout/* .lambda-packages/stripe_checkout_pkg/
+          cp -r src/lambdas/shared .lambda-packages/stripe_checkout_pkg/
+          cd .lambda-packages/stripe_checkout_pkg
+          zip -r ../stripe_checkout.zip .
+          cd ../..
 
-          # Package nb_oauth_callback
-          cd src/lambdas/nb_oauth_callback
-          zip -r ../../../.lambda-packages/nb_oauth_callback.zip .
-          cd ../../..
+          # Package nb_oauth_callback (includes shared modules for session token + observability)
+          mkdir -p .lambda-packages/nb_oauth_callback_pkg
+          cp -r src/lambdas/nb_oauth_callback/* .lambda-packages/nb_oauth_callback_pkg/
+          cp -r src/lambdas/shared .lambda-packages/nb_oauth_callback_pkg/
+          cd .lambda-packages/nb_oauth_callback_pkg
+          zip -r ../nb_oauth_callback.zip .
+          cd ../..
 
-          # Package token_refresh
-          cd src/lambdas/token_refresh
-          zip -r ../../../.lambda-packages/token_refresh.zip .
-          cd ../../..
+          # Package token_refresh (includes shared modules for metrics/observability)
+          mkdir -p .lambda-packages/token_refresh_pkg
+          cp -r src/lambdas/token_refresh/* .lambda-packages/token_refresh_pkg/
+          cp -r src/lambdas/shared .lambda-packages/token_refresh_pkg/
+          cd .lambda-packages/token_refresh_pkg
+          zip -r ../token_refresh.zip .
+          cd ../..
 
           # Package nat_agent (includes shared modules and nat source)
           mkdir -p .lambda-packages/nat_agent_staging

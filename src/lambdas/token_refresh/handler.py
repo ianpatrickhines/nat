@@ -24,6 +24,16 @@ import urllib3
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
+try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
+    from src.lambdas.shared import metrics
+    from src.lambdas.shared.observability import capture_exception, init_sentry
+except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
+    from shared import metrics  # type: ignore[no-redef]
+    from shared.observability import (  # type: ignore[no-redef]
+        capture_exception,
+        init_sentry,
+    )
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -207,6 +217,10 @@ def refresh_access_token(
         if response.status != 200:
             logger.error(
                 f"Token refresh failed: {response.status} - {response.data.decode('utf-8')}"
+            )
+            metrics.emit_count(
+                metrics.NB_API_ERROR,
+                {"nation_slug": nb_slug, "status_code": response.status, "endpoint": "oauth/token"},
             )
             raise ValueError(f"Token refresh failed with status {response.status}")
 
@@ -431,6 +445,7 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
     Scans for expiring tokens and refreshes them proactively.
     """
     logger.info("Starting token refresh job")
+    init_sentry()
 
     try:
         # Get NB OAuth credentials from Secrets Manager
@@ -469,9 +484,14 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
 
         logger.info(f"Token refresh complete: {succeeded} succeeded, {failed} failed")
 
-        # Log failures for debugging
+        # Log failures for debugging and emit a metric per failure so the
+        # token-refresh-failure alarm can fire on an elevated rate.
         for result in results:
             if not result["success"]:
+                metrics.emit_count(
+                    metrics.TOKEN_REFRESH_FAILURE,
+                    {"user_id": result["user_id"], "reason": result["error"]},
+                )
                 logger.warning(
                     f"Failed to refresh token for user {result['user_id']}: {result['error']}"
                 )
@@ -489,12 +509,14 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
 
     except ClientError as e:
         logger.error(f"AWS service error: {e}")
+        capture_exception(e)
         return {
             "statusCode": 500,
             "body": json.dumps({"error": "AWS service error"}),
         }
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+        capture_exception(e)
         return {
             "statusCode": 500,
             "body": json.dumps({"error": "Unexpected error"}),

@@ -7,9 +7,35 @@ Handles authentication, pagination, filtering, sideloading, and sideposting.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, List, Dict, cast
 import httpx
+
+logger = logging.getLogger(__name__)
+
+
+def _emit_nb_api_error(slug: str, status_code: int) -> None:
+    """
+    Emit an ``NBApiError`` CloudWatch metric for a failing NationBuilder call.
+
+    The ``nat`` package is also used by the standalone CLI, so the dependency on
+    the Lambda ``shared.metrics`` module is kept soft: the import is attempted in
+    both the repo and the flattened-Lambda layout and any failure is swallowed.
+    Observability must never break an API call.
+    """
+    try:
+        try:
+            from src.lambdas.shared import metrics  # repo / CLI layout
+        except ModuleNotFoundError:
+            from shared import metrics  # type: ignore[no-redef]  # flattened Lambda layout
+
+        metrics.emit_count(
+            metrics.NB_API_ERROR,
+            {"nation_slug": slug, "status_code": status_code},
+        )
+    except Exception:  # pragma: no cover - metrics must not raise into requests
+        pass
 
 
 @dataclass
@@ -47,8 +73,14 @@ class NationBuilderV2Client:
                 "Content-Type": "application/vnd.api+json",
                 "Accept": "application/vnd.api+json"
             },
-            timeout=self.timeout
+            timeout=self.timeout,
+            event_hooks={"response": [self._on_response]},
         )
+
+    async def _on_response(self, response: httpx.Response) -> None:
+        """Emit an NBApiError metric for any 4xx/5xx NationBuilder response."""
+        if response.status_code >= 400:
+            _emit_nb_api_error(self.slug, response.status_code)
 
     @property
     def client(self) -> httpx.AsyncClient:

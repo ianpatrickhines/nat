@@ -33,6 +33,8 @@ try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
         SessionTokenError,
         authenticate_request,
     )
+    from src.lambdas.shared import metrics
+    from src.lambdas.shared.observability import capture_exception, init_sentry
     from src.lambdas.shared.session_state import (
         append_undo_entry,
         compute_tool_id,
@@ -47,6 +49,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
         SessionContext,
         SessionTokenError,
         authenticate_request,
+    )
+    from shared import metrics  # type: ignore[no-redef]
+    from shared.observability import (  # type: ignore[no-redef]
+        capture_exception,
+        init_sentry,
     )
     from shared.session_state import (  # type: ignore[no-redef]
         append_undo_entry,
@@ -522,6 +529,21 @@ async def stream_agent_response(
                             yield format_sse_event(SSE_EVENT_TOOL_USE, tool_info)
 
                 elif isinstance(message, ResultMessage):
+                    # Record observability signals from the final result:
+                    # prompt-cache effectiveness and end-to-end agent latency.
+                    metrics.record_cache_usage(message.usage, nb_slug)
+                    if message.duration_ms is not None:
+                        metrics.emit_metric(
+                            metrics.AGENT_LATENCY_MS,
+                            float(message.duration_ms),
+                            metrics.UNIT_MILLISECONDS,
+                            {"nation_slug": nb_slug},
+                        )
+                    if message.is_error:
+                        metrics.emit_count(
+                            metrics.AGENT_ERROR, {"nation_slug": nb_slug}
+                        )
+
                     # Send tool result notification
                     yield format_sse_event(SSE_EVENT_TOOL_RESULT, {
                         "result": str(message.result)[:500],  # Truncate long results
@@ -539,6 +561,8 @@ async def stream_agent_response(
 
     except Exception as e:
         logger.error(f"Agent streaming error: {e}")
+        metrics.emit_count(metrics.AGENT_ERROR, {"nation_slug": nb_slug})
+        capture_exception(e, nation_slug=nb_slug)
         yield format_sse_event(SSE_EVENT_ERROR, {
             "error": str(e),
             "error_code": "AGENT_ERROR",
@@ -723,6 +747,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """
     # For Lambda Function URL with response streaming, we need to handle
     # the request and return a streaming response
+    init_sentry()
 
     # Parse request body - Lambda Function URL may have different event structure
     body_str = ""
@@ -807,6 +832,8 @@ async def streaming_handler(event: dict[str, Any], response_stream: Any) -> None
         event: Lambda event
         response_stream: awslambda.ResponseStream for writing chunks
     """
+    init_sentry()
+
     # Write SSE headers
     await response_stream.write(b"")  # Initialize stream
 

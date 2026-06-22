@@ -32,10 +32,17 @@ try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
         SessionTokenError,
         authenticate_request,
     )
+    from src.lambdas.shared import metrics
+    from src.lambdas.shared.observability import capture_exception, init_sentry
 except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
     from shared.session_token import (  # type: ignore[no-redef]
         SessionTokenError,
         authenticate_request,
+    )
+    from shared import metrics  # type: ignore[no-redef]
+    from shared.observability import (  # type: ignore[no-redef]
+        capture_exception,
+        init_sentry,
     )
 
 try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
@@ -284,7 +291,19 @@ async def run_agent_query(
                                 "input": block.input,
                             })
                 elif isinstance(message, ResultMessage):
+                    # Record prompt-cache effectiveness and agent latency.
+                    metrics.record_cache_usage(message.usage, nb_slug)
+                    if message.duration_ms is not None:
+                        metrics.emit_metric(
+                            metrics.AGENT_LATENCY_MS,
+                            float(message.duration_ms),
+                            metrics.UNIT_MILLISECONDS,
+                            {"nation_slug": nb_slug},
+                        )
                     if message.is_error:
+                        metrics.emit_count(
+                            metrics.AGENT_ERROR, {"nation_slug": nb_slug}
+                        )
                         logger.warning(f"Tool error: {message.result}")
 
         return {
@@ -295,6 +314,8 @@ async def run_agent_query(
 
     except Exception as e:
         logger.error(f"Agent query failed: {e}")
+        metrics.emit_count(metrics.AGENT_ERROR, {"nation_slug": nb_slug})
+        capture_exception(e, nation_slug=nb_slug)
         return {
             "response": "",
             "error": str(e),
@@ -338,6 +359,8 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Headers": "Content-Type,Authorization",
     }
+
+    init_sentry()
 
     try:
         # Parse request body
@@ -498,6 +521,7 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
 
     except ClientError as e:
         logger.error(f"AWS service error: {e}")
+        capture_exception(e)
         return {
             "statusCode": 500,
             "body": json.dumps({"error": "Internal server error"}),
@@ -505,6 +529,7 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         }
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+        capture_exception(e)
         return {
             "statusCode": 500,
             "body": json.dumps({"error": "Internal server error"}),
