@@ -869,9 +869,18 @@ class _FakeAssistantMessage:
 
 
 class _FakeResultMessage:
-    def __init__(self, result: str, is_error: bool = False) -> None:
+    def __init__(
+        self,
+        result: str,
+        is_error: bool = False,
+        usage: dict[str, Any] | None = None,
+        duration_ms: int = 1234,
+    ) -> None:
         self.result = result
         self.is_error = is_error
+        # Mirror the real SDK ResultMessage: usage may be None; duration_ms is int.
+        self.usage = usage
+        self.duration_ms = duration_ms
 
 
 def _make_fake_client(messages: list[Any]) -> Any:
@@ -934,6 +943,45 @@ def _collect_stream(**kwargs: Any) -> list[str]:
         return events
 
     return run_async(_run())
+
+
+class TestStreamingObservability:
+    """The ResultMessage branch emits cache + latency metrics (issue #17)."""
+
+    SESSION = "testnation#user-test-12345"
+
+    def test_result_message_emits_cache_and_latency_metrics(self) -> None:
+        """A ResultMessage in the stream drives record_cache_usage + latency."""
+        from src.lambdas.shared import metrics
+
+        table = _SessionStateFakeTable()
+        usage = {
+            "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 20,
+        }
+        result_msg = _FakeResultMessage("done", usage=usage, duration_ms=4242)
+
+        with _patch_streaming_sdk([result_msg], table):
+            with patch.object(metrics, "record_cache_usage") as rec, patch.object(
+                metrics, "emit_metric"
+            ) as emit:
+                _collect_stream(
+                    query="hello",
+                    nb_slug=TEST_NB_SLUG,
+                    nb_token=TEST_NB_TOKEN,
+                    model="claude-haiku-4-5-20251001",
+                    confirmed_tools=set(),
+                    session_id=self.SESSION,
+                )
+
+        # The usage dict is passed straight through to record_cache_usage.
+        rec.assert_called_once()
+        assert rec.call_args.args[0] == usage
+        # A latency metric is emitted with the message's duration.
+        assert any(
+            len(call.args) >= 2 and call.args[1] == float(4242)
+            for call in emit.call_args_list
+        ), "expected a latency metric emit with duration_ms=4242"
 
 
 class TestServerSideConfirmation:
