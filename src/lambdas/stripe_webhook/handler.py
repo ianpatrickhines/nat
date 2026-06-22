@@ -14,6 +14,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -29,9 +30,27 @@ logger.setLevel(logging.INFO)
 NATIONS_TABLE = os.environ.get("NATIONS_TABLE", "nat-nations-dev")
 TENANTS_TABLE = os.environ.get("TENANTS_TABLE", "nat-tenants-dev")
 USERS_TABLE = os.environ.get("USERS_TABLE", "nat-users-dev")
+# Table of processed Stripe event IDs (with TTL) used for webhook idempotency.
+STRIPE_EVENTS_TABLE = os.environ.get("STRIPE_EVENTS_TABLE", "nat-stripe-events-dev")
 STRIPE_WEBHOOK_SECRET_NAME = os.environ.get(
     "STRIPE_WEBHOOK_SECRET_NAME", "nat/stripe-webhook-secret"
 )
+
+# Stripe retries a delivery for up to ~3 days until it gets a 2xx. We keep each
+# processed event ID a bit beyond that window so replays are reliably deduped,
+# then let DynamoDB TTL purge the marker.
+EVENT_TTL_SECONDS = int(os.environ.get("STRIPE_EVENT_TTL_SECONDS", str(7 * 24 * 3600)))
+
+# nation_slug is validated wherever it is accepted because it flows into
+# DynamoDB keys, Secrets Manager names, and NationBuilder API URLs. Mirrors
+# shared.validation.NATION_SLUG_PATTERN (this Lambda is packaged without
+# shared/, so the pattern is inlined).
+NATION_SLUG_PATTERN = re.compile(r"^[a-z0-9-]{1,63}$")
+
+
+def is_valid_nation_slug(slug: Any) -> bool:
+    """Return True if *slug* is a non-empty, well-formed nation slug."""
+    return isinstance(slug, str) and NATION_SLUG_PATTERN.match(slug) is not None
 
 # NEW PRICING MODEL: Nation-level plans
 # Nat: $29/mo, 500 queries/month
@@ -143,6 +162,66 @@ def get_dynamodb_resource() -> Any:
     return boto3.resource("dynamodb")
 
 
+def record_event_id(event_id: str) -> bool:
+    """
+    Atomically record a processed Stripe event ID for idempotency.
+
+    Uses a conditional put so concurrent or retried deliveries of the same event
+    race on a single write: the first caller wins and should process the event;
+    every later caller sees the existing marker and skips. This is what prevents
+    ``handle_checkout_completed`` (and the other handlers) from double-writing
+    when Stripe legitimately redelivers an event.
+
+    Returns:
+        True if this call recorded the ID (caller should process the event),
+        False if the ID was already present (duplicate -- caller should no-op).
+    """
+    if not event_id:
+        # Genuine Stripe events always carry an ``id``. If one is missing we
+        # cannot dedupe, so process rather than silently drop the event.
+        logger.warning("Stripe event has no id; cannot dedupe, processing anyway")
+        return True
+
+    dynamodb = get_dynamodb_resource()
+    events_table = dynamodb.Table(STRIPE_EVENTS_TABLE)
+    expires_at = int(time.time()) + EVENT_TTL_SECONDS
+
+    try:
+        events_table.put_item(
+            Item={
+                "event_id": event_id,
+                "processed_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": expires_at,
+            },
+            ConditionExpression="attribute_not_exists(event_id)",
+        )
+        return True
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            logger.info(f"Duplicate Stripe event {event_id}; skipping reprocessing")
+            return False
+        raise
+
+
+def forget_event_id(event_id: str) -> None:
+    """
+    Best-effort removal of an event marker after processing failed.
+
+    If a handler raises *after* the marker was written, a subsequent Stripe retry
+    would otherwise be treated as a duplicate and dropped. Removing the marker
+    lets the retry reprocess the event. Never raises: a cleanup failure must not
+    mask the original processing error.
+    """
+    if not event_id:
+        return
+    try:
+        dynamodb = get_dynamodb_resource()
+        events_table = dynamodb.Table(STRIPE_EVENTS_TABLE)
+        events_table.delete_item(Key={"event_id": event_id})
+    except Exception as e:  # noqa: BLE001 - best effort cleanup
+        logger.warning(f"Failed to remove event marker {event_id}: {e}")
+
+
 def get_plan_from_price(price_id: str) -> str:
     """Map Stripe price ID to plan name."""
     # Default to extracting plan name from price ID if not in mapping
@@ -188,6 +267,14 @@ def handle_checkout_completed(session: dict[str, Any]) -> None:
         # This is critical - we cannot proceed without nation_slug
         # In production, consider alerting on this error
         raise ValueError(f"Missing nation_slug in checkout metadata for customer {customer_id}")
+
+    if not is_valid_nation_slug(nation_slug):
+        # A malformed slug would be written straight into the nation primary key;
+        # reject it rather than persist a corrupt record.
+        logger.error(f"Invalid nation_slug in checkout metadata: {nation_slug!r}")
+        raise ValueError(
+            f"Invalid nation_slug format in checkout metadata for customer {customer_id}"
+        )
 
     # If subscription exists, we'll get more details from subscription.updated
     # For now, create the nation with basic info
@@ -384,6 +471,16 @@ def handle_subscription_deleted(subscription: dict[str, Any]) -> None:
         raise
 
 
+# Maps Stripe event types to their handlers. Used both to dispatch and to decide
+# which event types are worth recording for idempotency (others are acked and
+# ignored without a DynamoDB write).
+EVENT_HANDLERS = {
+    "checkout.session.completed": handle_checkout_completed,
+    "customer.subscription.updated": handle_subscription_updated,
+    "customer.subscription.deleted": handle_subscription_deleted,
+}
+
+
 def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
     """
     Lambda handler for Stripe webhooks.
@@ -422,18 +519,38 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         webhook_event: WebhookEvent = json.loads(body)
         event_type = webhook_event.get("type", "")
         event_data = webhook_event.get("data", {}).get("object", {})
+        event_id = webhook_event.get("id", "")
 
-        logger.info(f"Processing webhook event: {event_type}")
+        logger.info(f"Processing webhook event: {event_type} ({event_id})")
 
-        # Route to appropriate handler
-        if event_type == "checkout.session.completed":
-            handle_checkout_completed(event_data)
-        elif event_type == "customer.subscription.updated":
-            handle_subscription_updated(event_data)
-        elif event_type == "customer.subscription.deleted":
-            handle_subscription_deleted(event_data)
-        else:
+        # Short-circuit event types we don't act on. Acknowledging them with 200
+        # (so Stripe stops retrying) without recording an idempotency marker
+        # keeps the events table free of the many types we ignore.
+        if event_type not in EVENT_HANDLERS:
             logger.info(f"Ignoring unhandled event type: {event_type}")
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"received": True}),
+                "headers": headers,
+            }
+
+        # Idempotency gate: record the event ID before doing any work. If we have
+        # already processed this delivery (Stripe retry, or near-simultaneous
+        # duplicate deliveries), skip so handlers do not double-write.
+        if not record_event_id(event_id):
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"received": True, "duplicate": True}),
+                "headers": headers,
+            }
+
+        try:
+            EVENT_HANDLERS[event_type](event_data)
+        except Exception:
+            # Processing failed after the marker was written; remove it so a
+            # Stripe retry can reprocess instead of being deduped away.
+            forget_event_id(event_id)
+            raise
 
         return {
             "statusCode": 200,
@@ -446,6 +563,14 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         return {
             "statusCode": 400,
             "body": json.dumps({"error": "Invalid JSON"}),
+            "headers": headers,
+        }
+    except ValueError as e:
+        # Raised by handlers for malformed payloads (e.g. invalid nation_slug).
+        logger.error(f"Webhook validation error: {e}")
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": str(e)}),
             "headers": headers,
         }
     except ClientError as e:

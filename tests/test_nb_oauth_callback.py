@@ -345,6 +345,36 @@ class TestHandler:
         assert response["statusCode"] == 302
         assert "error=invalid_state" in response["headers"]["Location"]
 
+    def test_invalid_nation_slug_redirects_to_error(self) -> None:
+        """A malformed slug in state is rejected before any token exchange.
+
+        The slug flows into the Secrets Manager path and the NationBuilder token
+        URL host, so a bad value (here containing a path-traversal segment) must
+        be rejected up front. This endpoint is a browser redirect, so rejection
+        is surfaced as an error redirect rather than a 400 body.
+        """
+        malicious_state = base64.urlsafe_b64encode(
+            json.dumps(
+                {
+                    "user_id": TEST_USER_ID,
+                    "nb_slug": "../../etc/passwd",
+                    "redirect_uri": TEST_REDIRECT_URI,
+                }
+            ).encode()
+        ).decode()
+
+        event = {
+            "queryStringParameters": {
+                "code": TEST_CODE,
+                "state": malicious_state,
+            },
+        }
+
+        response = handler(event, None)
+
+        assert response["statusCode"] == 302
+        assert "error=invalid_nation" in response["headers"]["Location"]
+
     def test_successful_oauth_flow(self) -> None:
         """Test successful OAuth flow end-to-end."""
         users_table = MockDynamoDBTable()

@@ -38,6 +38,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
         authenticate_request,
     )
 
+try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
+    from src.lambdas.shared.validation import is_valid_nation_slug
+except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
+    from shared.validation import is_valid_nation_slug  # type: ignore[no-redef]
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -372,6 +377,17 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
 
         user_id = session.user_id
         nation_slug = session.nation_slug
+
+        # Defense in depth: the slug is token-attested (minted post-validation at
+        # OAuth connect), but it is interpolated into Secrets Manager / DynamoDB
+        # lookups, so reject a malformed value rather than build a bad key.
+        if not is_valid_nation_slug(nation_slug):
+            logger.error(f"Invalid nation_slug in session token: {nation_slug!r}")
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Invalid nation_slug format"}),
+                "headers": headers,
+            }
 
         # Extract request payload (identity fields are ignored if present).
         query = body.get("query")

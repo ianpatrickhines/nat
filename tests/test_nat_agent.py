@@ -335,6 +335,23 @@ class TestHandler:
         body = json.loads(response["body"])
         assert body["error_code"] == "MISSING_TOKEN"
 
+    def test_malformed_slug_in_token_returns_400(self) -> None:
+        """Defense in depth: a malformed slug in a validly-signed token is rejected.
+
+        The slug is interpolated into Secrets Manager / DynamoDB lookups, so even
+        a token-attested value is format-checked before use.
+        """
+        token = mint_session_token(TEST_USER_ID, "bad slug!", TEST_JWT_SECRET)
+        event = create_api_event(
+            body={"query": "test query"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        response = handler(event, None)
+
+        assert response["statusCode"] == 400
+        body = json.loads(response["body"])
+        assert "Invalid nation_slug" in body["error"]
+
     def test_forged_token_returns_401(self) -> None:
         """A token signed with the wrong secret is rejected with 401."""
         event = create_api_event(

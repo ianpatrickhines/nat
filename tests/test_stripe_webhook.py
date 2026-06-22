@@ -12,14 +12,18 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from src.lambdas.stripe_webhook.handler import (
     PLAN_QUERY_LIMITS,
+    forget_event_id,
     get_plan_from_price,
     handle_checkout_completed,
     handle_subscription_deleted,
     handle_subscription_updated,
     handler,
+    is_valid_nation_slug,
+    record_event_id,
     verify_stripe_signature,
 )
 
@@ -111,17 +115,46 @@ class MockDynamoDBTable:
         self.items: dict[str, dict[str, Any]] = {}
         self.put_calls: list[dict[str, Any]] = []
         self.update_calls: list[dict[str, Any]] = []
+        self.delete_calls: list[dict[str, Any]] = []
         self.query_results: list[dict[str, Any]] = []
 
     @staticmethod
     def _key(data: dict[str, Any]) -> Any:
-        return data.get("nation_slug") or data.get("tenant_id") or data.get("user_id")
+        return (
+            data.get("nation_slug")
+            or data.get("tenant_id")
+            or data.get("user_id")
+            or data.get("event_id")
+        )
 
-    def put_item(self, Item: dict[str, Any]) -> None:
+    def put_item(
+        self,
+        Item: dict[str, Any],
+        ConditionExpression: str | None = None,
+    ) -> None:
         key = self._key(Item)
+        # Simulate a conditional put (idempotency marker): fail if the item
+        # already exists, mirroring DynamoDB's ConditionalCheckFailedException.
+        if ConditionExpression and "attribute_not_exists" in ConditionExpression:
+            if key is not None and key in self.items:
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "ConditionalCheckFailedException",
+                            "Message": "The conditional request failed",
+                        }
+                    },
+                    "PutItem",
+                )
         if key:
             self.items[key] = Item
         self.put_calls.append(Item)
+
+    def delete_item(self, Key: dict[str, Any]) -> None:
+        key = self._key(Key)
+        if key is not None and key in self.items:
+            del self.items[key]
+        self.delete_calls.append(Key)
 
     def get_item(self, Key: dict[str, Any]) -> dict[str, Any]:
         key = self._key(Key)
@@ -154,14 +187,22 @@ class MockDynamoDBTable:
 class MockDynamoDBResource:
     """Mock DynamoDB resource for testing.
 
-    The webhook handler now operates exclusively on the NationsTable, so a
-    single backing table is sufficient regardless of the table name requested.
+    Routes by table name: the Stripe events idempotency table is backed by a
+    dedicated mock so event markers don't pollute nation-record assertions;
+    everything else resolves to the NationsTable.
     """
 
-    def __init__(self, nations_table: MockDynamoDBTable) -> None:
+    def __init__(
+        self,
+        nations_table: MockDynamoDBTable,
+        events_table: MockDynamoDBTable | None = None,
+    ) -> None:
         self.nations_table = nations_table
+        self.events_table = events_table or MockDynamoDBTable()
 
     def Table(self, name: str) -> MockDynamoDBTable:
+        if "stripe-events" in name:
+            return self.events_table
         return self.nations_table
 
 
@@ -479,6 +520,7 @@ class TestHandler:
         mock_resource = MockDynamoDBResource(nations_table)
 
         event_body = {
+            "id": "evt_lowercase",
             "type": "checkout.session.completed",
             "data": {
                 "object": {
@@ -510,3 +552,211 @@ class TestHandler:
             response = handler(lambda_event, None)
 
         assert response["statusCode"] == 200
+
+
+class TestNationSlugValidation:
+    """Tests for nation_slug format validation in the webhook."""
+
+    def test_is_valid_nation_slug_accepts_good_slugs(self) -> None:
+        assert is_valid_nation_slug("testnation")
+        assert is_valid_nation_slug("my-nation-123")
+        assert is_valid_nation_slug("a")
+        assert is_valid_nation_slug("a" * 63)
+
+    def test_is_valid_nation_slug_rejects_bad_slugs(self) -> None:
+        assert not is_valid_nation_slug("")
+        assert not is_valid_nation_slug("UPPER")
+        assert not is_valid_nation_slug("has space")
+        assert not is_valid_nation_slug("under_score")
+        assert not is_valid_nation_slug("dots.here")
+        assert not is_valid_nation_slug("slash/here")
+        assert not is_valid_nation_slug("a" * 64)
+        assert not is_valid_nation_slug(None)  # type: ignore[arg-type]
+
+    def test_handle_checkout_invalid_slug_raises(self) -> None:
+        """A malformed slug in checkout metadata must not be persisted."""
+        nations_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(nations_table)
+
+        session = {
+            "customer": TEST_CUSTOMER_ID,
+            "subscription": TEST_SUBSCRIPTION_ID,
+            "metadata": {"plan": "nat", "nation_slug": "Bad Slug!"},
+        }
+
+        with patch(
+            "src.lambdas.stripe_webhook.handler.get_dynamodb_resource",
+            return_value=mock_resource,
+        ):
+            with pytest.raises(ValueError, match="Invalid nation_slug"):
+                handle_checkout_completed(session)
+
+        # Nothing written to the nations table.
+        assert len(nations_table.put_calls) == 0
+        assert len(nations_table.update_calls) == 0
+
+    def test_handler_invalid_slug_returns_400(self) -> None:
+        """End-to-end: an invalid slug surfaces as a 400 from the handler."""
+        nations_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(nations_table)
+
+        event_body = {
+            "id": "evt_badslug",
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "customer": TEST_CUSTOMER_ID,
+                    "subscription": TEST_SUBSCRIPTION_ID,
+                    "metadata": {"nation_slug": "Bad Slug!"},
+                }
+            },
+        }
+        body = json.dumps(event_body)
+        signature = create_stripe_signature(body, TEST_WEBHOOK_SECRET)
+        lambda_event = {"body": body, "headers": {"Stripe-Signature": signature}}
+
+        with (
+            patch(
+                "src.lambdas.stripe_webhook.handler.get_stripe_webhook_secret",
+                return_value=TEST_WEBHOOK_SECRET,
+            ),
+            patch(
+                "src.lambdas.stripe_webhook.handler.get_dynamodb_resource",
+                return_value=mock_resource,
+            ),
+        ):
+            response = handler(lambda_event, None)
+
+        assert response["statusCode"] == 400
+        assert len(nations_table.put_calls) == 0
+
+
+class TestWebhookIdempotency:
+    """Tests for Stripe webhook idempotency (duplicate event handling)."""
+
+    def test_record_event_id_first_then_duplicate(self) -> None:
+        """First call records and returns True; a replay returns False."""
+        events_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(MockDynamoDBTable(), events_table)
+
+        with patch(
+            "src.lambdas.stripe_webhook.handler.get_dynamodb_resource",
+            return_value=mock_resource,
+        ):
+            assert record_event_id("evt_dedupe") is True
+            assert record_event_id("evt_dedupe") is False
+
+        # Marker stored exactly once, carries a TTL.
+        assert "evt_dedupe" in events_table.items
+        assert "expires_at" in events_table.items["evt_dedupe"]
+
+    def test_record_event_id_missing_id_processes(self) -> None:
+        """An event with no id cannot be deduped; we still process it."""
+        events_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(MockDynamoDBTable(), events_table)
+
+        with patch(
+            "src.lambdas.stripe_webhook.handler.get_dynamodb_resource",
+            return_value=mock_resource,
+        ):
+            assert record_event_id("") is True
+
+        assert len(events_table.put_calls) == 0
+
+    def test_forget_event_id_allows_reprocessing(self) -> None:
+        """Removing a marker lets a later delivery be processed again."""
+        events_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(MockDynamoDBTable(), events_table)
+
+        with patch(
+            "src.lambdas.stripe_webhook.handler.get_dynamodb_resource",
+            return_value=mock_resource,
+        ):
+            assert record_event_id("evt_retry") is True
+            forget_event_id("evt_retry")
+            # Marker gone -> a retry records it fresh.
+            assert record_event_id("evt_retry") is True
+
+    def test_duplicate_delivery_does_not_double_write(self) -> None:
+        """A replayed checkout webhook must not create the nation twice."""
+        nations_table = MockDynamoDBTable()
+        events_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(nations_table, events_table)
+
+        event_body = {
+            "id": "evt_duplicate",
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "customer": TEST_CUSTOMER_ID,
+                    "subscription": TEST_SUBSCRIPTION_ID,
+                    "customer_email": TEST_EMAIL,
+                    "metadata": {"nation_slug": TEST_NATION_SLUG},
+                }
+            },
+        }
+        body = json.dumps(event_body)
+        signature = create_stripe_signature(body, TEST_WEBHOOK_SECRET)
+        lambda_event = {"body": body, "headers": {"Stripe-Signature": signature}}
+
+        with (
+            patch(
+                "src.lambdas.stripe_webhook.handler.get_stripe_webhook_secret",
+                return_value=TEST_WEBHOOK_SECRET,
+            ),
+            patch(
+                "src.lambdas.stripe_webhook.handler.get_dynamodb_resource",
+                return_value=mock_resource,
+            ),
+        ):
+            first = handler(lambda_event, None)
+            second = handler(lambda_event, None)
+
+        assert first["statusCode"] == 200
+        assert json.loads(first["body"]) == {"received": True}
+
+        # Second delivery is acknowledged but treated as a duplicate.
+        assert second["statusCode"] == 200
+        assert json.loads(second["body"]) == {"received": True, "duplicate": True}
+
+        # The nation record was created exactly once.
+        assert len(nations_table.put_calls) == 1
+
+    def test_failed_processing_removes_marker_for_retry(self) -> None:
+        """If a handler raises, the marker is removed so Stripe can retry."""
+        nations_table = MockDynamoDBTable()
+        events_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(nations_table, events_table)
+
+        # Missing nation_slug -> handle_checkout_completed raises ValueError.
+        event_body = {
+            "id": "evt_fail",
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "customer": TEST_CUSTOMER_ID,
+                    "subscription": TEST_SUBSCRIPTION_ID,
+                    "metadata": {"plan": "nat"},
+                }
+            },
+        }
+        body = json.dumps(event_body)
+        signature = create_stripe_signature(body, TEST_WEBHOOK_SECRET)
+        lambda_event = {"body": body, "headers": {"Stripe-Signature": signature}}
+
+        with (
+            patch(
+                "src.lambdas.stripe_webhook.handler.get_stripe_webhook_secret",
+                return_value=TEST_WEBHOOK_SECRET,
+            ),
+            patch(
+                "src.lambdas.stripe_webhook.handler.get_dynamodb_resource",
+                return_value=mock_resource,
+            ),
+        ):
+            response = handler(lambda_event, None)
+
+        # Validation failure -> 400, and the marker was rolled back.
+        assert response["statusCode"] == 400
+        assert "evt_fail" not in events_table.items
+        assert events_table.delete_calls == [{"event_id": "evt_fail"}]

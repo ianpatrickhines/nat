@@ -289,6 +289,36 @@ class TestHandler:
         body = json.loads(response["body"])
         assert "Invalid plan" in body["error"]
 
+    def test_missing_nation_slug(self) -> None:
+        """Test error when nation_slug is missing."""
+        event: dict[str, Any] = {
+            "httpMethod": "POST",
+            "body": json.dumps({"plan": "nat"}),
+        }
+
+        response = handler(event, None)
+
+        assert response["statusCode"] == 400
+        body = json.loads(response["body"])
+        assert "Missing required field: nation_slug" in body["error"]
+
+    @pytest.mark.parametrize(
+        "bad_slug",
+        ["Bad Slug!", "UPPER", "under_score", "dots.here", "a/b", "a" * 64],
+    )
+    def test_invalid_nation_slug_returns_400(self, bad_slug: str) -> None:
+        """A malformed nation_slug is rejected with 400 before reaching Stripe."""
+        event: dict[str, Any] = {
+            "httpMethod": "POST",
+            "body": json.dumps({"plan": "nat", "nation_slug": bad_slug}),
+        }
+
+        response = handler(event, None)
+
+        assert response["statusCode"] == 400
+        body = json.loads(response["body"])
+        assert "Invalid nation_slug" in body["error"]
+
     def test_invalid_json_body(self) -> None:
         """Test error handling for invalid JSON body."""
         event: dict[str, Any] = {
