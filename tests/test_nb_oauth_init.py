@@ -155,7 +155,9 @@ class TestInitHandler:
         payload = json.loads(base64.urlsafe_b64decode(state).decode())
         assert payload["nonce"] in table.items
 
-    def test_supplied_user_id_preserved(self) -> None:
+    def test_supplied_user_id_is_ignored(self) -> None:
+        """A caller-supplied user_id must NOT be trusted (session-fixation
+        defense): the issued state binds to a server-generated identity."""
         table = MockOAuthStateTable()
         with ExitStack() as stack:
             for p in _patches(table):
@@ -164,14 +166,15 @@ class TestInitHandler:
                 {
                     "queryStringParameters": {
                         "nb_slug": TEST_NB_SLUG,
-                        "user_id": "existing-user-7",
+                        "user_id": "attacker-controlled-7",
                     }
                 },
                 None,
             )
         assert response["statusCode"] == 302
         stored = next(iter(table.items.values()))
-        assert stored["user_id"] == "existing-user-7"
+        assert stored["user_id"] != "attacker-controlled-7"
+        assert stored["user_id"].startswith("user-")
 
     def test_callback_url_off_allowlist_rejected(self) -> None:
         """If the configured callback URL is not allowlisted, issuance fails."""

@@ -8,8 +8,15 @@ then redirects the browser to NationBuilder's authorize endpoint.
 
 Flow:
   1. Read ``nb_slug`` (the nation being connected) from the query string.
-  2. Use the caller-supplied ``user_id`` or generate a fresh one (the NB connect
-     flow doubles as login, so a brand-new connect has no prior identity).
+  2. Generate a fresh ``user_id`` server-side. We deliberately do NOT trust a
+     caller-supplied ``user_id``: doing so is an OAuth login-CSRF / session
+     fixation vector (an attacker could mint a nonce bound to a ``user_id`` they
+     control, lure a victim through authorize, and pin the victim's connection
+     to that identity). The connect flow doubles as login, so a fresh connect
+     has no prior trusted identity anyway; the authoritative identity is the
+     signed session token minted at the callback. Re-auth identity continuity,
+     if ever needed, must be derived from a *verified* session token, never a
+     query-string value.
   3. Issue a single-use ``state`` bound to ``(user_id, nb_slug, redirect_uri)``,
      persisting its nonce in DynamoDB with a TTL.
   4. 302-redirect to ``https://{nb_slug}.nationbuilder.com/oauth/authorize``.
@@ -101,7 +108,10 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
 
     Expected query parameters:
       - ``nb_slug`` (required): the NationBuilder nation slug to connect.
-      - ``user_id`` (optional): existing user identity; generated if absent.
+
+    ``user_id`` is always generated server-side and is intentionally NOT read
+    from the request (see module docstring: trusting a client-supplied
+    ``user_id`` is a session-fixation vector).
     """
     try:
         query_params = event.get("queryStringParameters") or {}
@@ -123,8 +133,9 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
                 f"{ERROR_REDIRECT_URL}?error=server_misconfigured"
             )
 
-        # NB connect doubles as login; mint a new user_id when none is supplied.
-        user_id = query_params.get("user_id") or f"user-{uuid.uuid4().hex}"
+        # NB connect doubles as login. Always mint the user_id server-side; a
+        # client-supplied value is never trusted (session-fixation defense).
+        user_id = f"user-{uuid.uuid4().hex}"
 
         try:
             state = issue_oauth_state(
