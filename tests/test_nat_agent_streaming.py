@@ -17,14 +17,21 @@ from src.lambdas.nat_agent_streaming.handler import (
     get_nb_tokens,
     get_user_info,
     handler,
+    authenticated_body,
     process_streaming_request,
+    stream_agent_response,
+    _build_undo_entry,
     _get_undo_instruction,
     SSE_EVENT_TEXT,
     SSE_EVENT_TOOL_USE,
     SSE_EVENT_TOOL_RESULT,
     SSE_EVENT_ERROR,
     SSE_EVENT_DONE,
+    SSE_EVENT_CONFIRMATION_REQUIRED,
 )
+from src.lambdas.shared import session_state
+from src.lambdas.shared.session_state import compute_tool_id, make_session_id
+from src.lambdas.shared.session_token import mint_session_token
 
 
 def run_async(coro: Any) -> Any:
@@ -36,8 +43,19 @@ def run_async(coro: Any) -> Any:
 TEST_USER_ID = "user-test-12345"
 TEST_TENANT_ID = "tenant-test-67890"
 TEST_NB_SLUG = "testnation"
+TEST_NATION_SLUG = "testnation"
 TEST_NB_TOKEN = "nb_test_token_abc123"
 TEST_API_KEY = "sk-ant-test-key"
+TEST_JWT_SECRET = "test-session-secret"
+
+
+def bearer(
+    user_id: str = TEST_USER_ID,
+    nation_slug: str = TEST_NATION_SLUG,
+    secret: str = TEST_JWT_SECRET,
+) -> str:
+    """Build an `Authorization: Bearer <jwt>` header value for tests."""
+    return f"Bearer {mint_session_token(user_id, nation_slug, secret)}"
 
 
 def create_lambda_url_event(
@@ -233,11 +251,8 @@ class TestProcessStreamingRequest:
         assert "event: error" in events[0]
         assert "Missing required field: user_id" in events[0]
 
-    @patch("src.lambdas.nat_agent_streaming.handler.get_user_info")
-    def test_user_not_found(self, mock_get_user: MagicMock) -> None:
-        """Test that unknown user returns error event."""
-        mock_get_user.return_value = None
-
+    def test_missing_nation_slug(self) -> None:
+        """Test that a request without nation_slug returns an error event."""
         async def _test() -> list[str]:
             body = {"query": "test query", "user_id": TEST_USER_ID}
             events = []
@@ -248,18 +263,31 @@ class TestProcessStreamingRequest:
         events = run_async(_test())
         assert len(events) == 1
         assert "event: error" in events[0]
-        assert "USER_NOT_FOUND" in events[0]
+        assert "Missing required field: nation_slug" in events[0]
 
-    @patch("src.lambdas.nat_agent_streaming.handler.get_user_info")
-    def test_nb_not_connected(self, mock_get_user: MagicMock) -> None:
-        """Test that NB not connected returns error event."""
-        mock_get_user.return_value = {
-            "user_id": TEST_USER_ID,
-            "nb_connected": False,
-        }
+    @patch("src.lambdas.nat_agent_streaming.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation")
+    @patch("src.lambdas.nat_agent_streaming.handler.get_nb_tokens_by_nation")
+    def test_nb_not_connected(
+        self,
+        mock_get_tokens: MagicMock,
+        mock_billing: MagicMock,
+        mock_rate_limit: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        """Test that a nation without NB tokens returns NB_NOT_CONNECTED."""
+        mock_get_tokens.return_value = None
+        mock_billing.return_value = False
+        mock_rate_limit.return_value = None
+        mock_verify.return_value = {"valid": True}
 
         async def _test() -> list[str]:
-            body = {"query": "test query", "user_id": TEST_USER_ID}
+            body = {
+                "query": "test query",
+                "user_id": TEST_USER_ID,
+                "nation_slug": TEST_NB_SLUG,
+            }
             events = []
             async for event in process_streaming_request(body):
                 events.append(event)
@@ -269,49 +297,33 @@ class TestProcessStreamingRequest:
         assert len(events) == 1
         assert "event: error" in events[0]
         assert "NB_NOT_CONNECTED" in events[0]
+        mock_billing.assert_called_once_with(TEST_NB_SLUG)
 
-    @patch("src.lambdas.nat_agent_streaming.handler.get_user_info")
-    def test_nb_needs_reauth(self, mock_get_user: MagicMock) -> None:
-        """Test that NB needs reauth returns error event."""
-        mock_get_user.return_value = {
-            "user_id": TEST_USER_ID,
-            "nb_connected": True,
-            "nb_needs_reauth": True,
-        }
-
-        async def _test() -> list[str]:
-            body = {"query": "test query", "user_id": TEST_USER_ID}
-            events = []
-            async for event in process_streaming_request(body):
-                events.append(event)
-            return events
-
-        events = run_async(_test())
-        assert len(events) == 1
-        assert "event: error" in events[0]
-        assert "NB_NEEDS_REAUTH" in events[0]
-
+    @patch("src.lambdas.nat_agent_streaming.handler.verify_nation_subscription")
     @patch("src.lambdas.nat_agent_streaming.handler.check_rate_limit")
-    @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle")
-    @patch("src.lambdas.nat_agent_streaming.handler.get_nb_tokens")
-    @patch("src.lambdas.nat_agent_streaming.handler.get_user_info")
-    def test_nb_tokens_missing(
-        self, mock_get_user: MagicMock, mock_get_tokens: MagicMock,
-        mock_billing: MagicMock, mock_rate_limit: MagicMock
+    @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation")
+    def test_rate_limit_exceeded(
+        self,
+        mock_billing: MagicMock,
+        mock_rate_limit: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
-        """Test that missing NB tokens returns error event."""
-        mock_get_user.return_value = {
-            "user_id": TEST_USER_ID,
-            "tenant_id": TEST_TENANT_ID,
-            "nb_connected": True,
-            "nb_needs_reauth": False,
-        }
-        mock_get_tokens.return_value = None
-        mock_billing.return_value = None
-        mock_rate_limit.return_value = None
+        """Test that exceeding the per-user rate limit returns an error event."""
+        from src.lambdas.shared.usage_tracking import RateLimitError
+
+        mock_billing.return_value = False
+        mock_verify.return_value = {"valid": True}
+        mock_rate_limit.side_effect = RateLimitError(
+            message="Rate limit exceeded. Please wait 3 seconds.",
+            retry_after=3,
+        )
 
         async def _test() -> list[str]:
-            body = {"query": "test query", "user_id": TEST_USER_ID}
+            body = {
+                "query": "test query",
+                "user_id": TEST_USER_ID,
+                "nation_slug": TEST_NB_SLUG,
+            }
             events = []
             async for event in process_streaming_request(body):
                 events.append(event)
@@ -320,11 +332,151 @@ class TestProcessStreamingRequest:
         events = run_async(_test())
         assert len(events) == 1
         assert "event: error" in events[0]
-        assert "NB_TOKENS_MISSING" in events[0]
+        assert "RATE_LIMIT_EXCEEDED" in events[0]
+
+    @patch("src.lambdas.nat_agent_streaming.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent_streaming.handler.track_query_usage_nation")
+    @patch("src.lambdas.nat_agent_streaming.handler.stream_agent_response")
+    @patch("src.lambdas.nat_agent_streaming.handler.get_nb_tokens_by_nation")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation")
+    def test_successful_streaming_tracks_usage(
+        self,
+        mock_billing: MagicMock,
+        mock_rate_limit: MagicMock,
+        mock_get_tokens: MagicMock,
+        mock_stream: MagicMock,
+        mock_track: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        """Test that a successful stream increments per-nation usage."""
+        mock_billing.return_value = False
+        mock_rate_limit.return_value = None
+        mock_verify.return_value = {"valid": True}
+        mock_get_tokens.return_value = (TEST_NB_TOKEN, TEST_NB_SLUG)
+        mock_track.return_value = 42
+
+        async def fake_stream(**kwargs: Any) -> Any:
+            yield format_sse_event(
+                SSE_EVENT_DONE, {"response": "hi", "tool_calls": []}
+            )
+
+        mock_stream.side_effect = lambda **kwargs: fake_stream(**kwargs)
+
+        async def _test() -> list[str]:
+            body = {
+                "query": "test query",
+                "user_id": TEST_USER_ID,
+                "nation_slug": TEST_NB_SLUG,
+            }
+            events = []
+            async for event in process_streaming_request(body):
+                events.append(event)
+            return events
+
+        events = run_async(_test())
+        assert any("event: done" in event for event in events)
+        # Usage is charged to the nation, keyed by the requesting user
+        mock_track.assert_called_once_with(TEST_USER_ID, TEST_NB_SLUG)
+        # The subscription gate must be checked for the nation before work
+        mock_verify.assert_called_once_with(TEST_USER_ID, TEST_NB_SLUG)
+
+    @patch("src.lambdas.nat_agent_streaming.handler.get_nb_tokens_by_nation")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent_streaming.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation")
+    def test_inactive_subscription_blocked(
+        self,
+        mock_billing: MagicMock,
+        mock_verify: MagicMock,
+        mock_rate_limit: MagicMock,
+        mock_get_tokens: MagicMock,
+    ) -> None:
+        """A cancelled/past-due nation is blocked even with valid NB tokens."""
+        from src.lambdas.shared.subscription_middleware import (
+            SubscriptionError,
+            SubscriptionErrorCode,
+        )
+
+        mock_billing.return_value = False
+        mock_verify.side_effect = SubscriptionError(
+            code=SubscriptionErrorCode.SUBSCRIPTION_INACTIVE,
+            message="Nation subscription is not active (status: cancelled).",
+            http_status=402,
+        )
+
+        async def _test() -> list[str]:
+            body = {
+                "query": "test query",
+                "user_id": TEST_USER_ID,
+                "nation_slug": TEST_NB_SLUG,
+            }
+            events = []
+            async for event in process_streaming_request(body):
+                events.append(event)
+            return events
+
+        events = run_async(_test())
+        assert len(events) == 1
+        assert "event: error" in events[0]
+        assert "SUBSCRIPTION_INACTIVE" in events[0]
+        # Gate runs before NB tokens / rate limit, so neither is reached
+        mock_get_tokens.assert_not_called()
+        mock_rate_limit.assert_not_called()
+
+    @patch("src.lambdas.nat_agent_streaming.handler.get_nb_tokens_by_nation")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent_streaming.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation")
+    def test_query_limit_exceeded_blocked(
+        self,
+        mock_billing: MagicMock,
+        mock_verify: MagicMock,
+        mock_rate_limit: MagicMock,
+        mock_get_tokens: MagicMock,
+    ) -> None:
+        """A nation over its query cap is blocked with QUERY_LIMIT_EXCEEDED."""
+        from src.lambdas.shared.subscription_middleware import (
+            SubscriptionError,
+            SubscriptionErrorCode,
+        )
+
+        mock_billing.return_value = False
+        mock_verify.side_effect = SubscriptionError(
+            code=SubscriptionErrorCode.QUERY_LIMIT_EXCEEDED,
+            message="Monthly query limit exceeded.",
+            http_status=403,
+        )
+
+        async def _test() -> list[str]:
+            body = {
+                "query": "test query",
+                "user_id": TEST_USER_ID,
+                "nation_slug": TEST_NB_SLUG,
+            }
+            events = []
+            async for event in process_streaming_request(body):
+                events.append(event)
+            return events
+
+        events = run_async(_test())
+        assert len(events) == 1
+        assert "event: error" in events[0]
+        assert "QUERY_LIMIT_EXCEEDED" in events[0]
+        mock_get_tokens.assert_not_called()
 
 
 class TestHandler:
     """Tests for the main Lambda handler."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_session_secret(self) -> Any:
+        """Use a deterministic signing secret for session-token verification."""
+        with patch(
+            "src.lambdas.shared.session_token.get_session_secret",
+            return_value=TEST_JWT_SECRET,
+        ):
+            yield
 
     def test_empty_body(self) -> None:
         """Test that empty request body returns 400."""
@@ -362,7 +514,10 @@ class TestHandler:
         )
         mock_asyncio.get_event_loop.return_value = mock_event_loop
 
-        event = create_lambda_url_event(body={"user_id": TEST_USER_ID})
+        event = create_lambda_url_event(
+            body={"user_id": TEST_USER_ID},
+            headers={"Authorization": bearer()},
+        )
         response = handler(event, None)
 
         assert response["headers"]["Content-Type"] == "text/event-stream"
@@ -396,10 +551,13 @@ class TestHandler:
         mock_event_loop.run_until_complete.return_value = expected_events
         mock_asyncio.get_event_loop.return_value = mock_event_loop
 
-        event = create_lambda_url_event(body={
-            "query": "test query",
-            "user_id": TEST_USER_ID,
-        })
+        event = create_lambda_url_event(
+            body={
+                "query": "test query",
+                "user_id": TEST_USER_ID,
+            },
+            headers={"Authorization": bearer()},
+        )
         response = handler(event, None)
 
         assert response["statusCode"] == 200
@@ -427,7 +585,7 @@ class TestHandler:
             event = {
                 "body": encoded_body,
                 "isBase64Encoded": True,
-                "headers": {},
+                "headers": {"Authorization": bearer()},
             }
 
             with patch("src.lambdas.nat_agent_streaming.handler.asyncio") as mock_asyncio:
@@ -589,3 +747,423 @@ class TestUndoFunctionality:
             original_tool_name="create_signup"
         )
         assert result == "This action cannot be undone"
+
+
+class TestStreamingAuthentication:
+    """Authentication / IDOR-closure tests for the streaming entrypoint."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_session_secret(self) -> Any:
+        with patch(
+            "src.lambdas.shared.session_token.get_session_secret",
+            return_value=TEST_JWT_SECRET,
+        ):
+            yield
+
+    def test_missing_token_returns_401(self) -> None:
+        """No Authorization header -> 401 before any work."""
+        event = create_lambda_url_event(
+            body={"query": "hi", "user_id": TEST_USER_ID},
+            headers={},
+        )
+        response = handler(event, None)
+        assert response["statusCode"] == 401
+        body = json.loads(response["body"])
+        assert body["error_code"] == "MISSING_TOKEN"
+
+    def test_forged_token_returns_401(self) -> None:
+        """A token signed with the wrong secret -> 401."""
+        event = create_lambda_url_event(
+            body={"query": "hi"},
+            headers={"Authorization": bearer(secret="attacker-secret")},
+        )
+        response = handler(event, None)
+        assert response["statusCode"] == 401
+
+    def test_expired_token_returns_401(self) -> None:
+        expired = mint_session_token(
+            TEST_USER_ID, TEST_NATION_SLUG, TEST_JWT_SECRET, ttl_seconds=-5
+        )
+        event = create_lambda_url_event(
+            body={"query": "hi"},
+            headers={"Authorization": f"Bearer {expired}"},
+        )
+        response = handler(event, None)
+        assert response["statusCode"] == 401
+        body = json.loads(response["body"])
+        assert body["error_code"] == "TOKEN_EXPIRED"
+
+    def test_authenticated_body_overrides_client_identity(self) -> None:
+        """authenticated_body derives identity from the token, not the body."""
+        event = create_lambda_url_event(
+            body={"query": "hi"},
+            headers={"Authorization": bearer("real-user", "real-nation")},
+        )
+        body = {
+            "query": "hi",
+            "user_id": "attacker",
+            "nation_slug": "victim-nation",
+        }
+        result = authenticated_body(event, body)
+        assert result["user_id"] == "real-user"
+        assert result["nation_slug"] == "real-nation"
+        # The original body dict is not mutated.
+        assert body["nation_slug"] == "victim-nation"
+
+
+# =============================================================================
+# Server-side confirmation / undo (issue #12)
+# =============================================================================
+
+
+class _SessionStateFakeTable:
+    """In-memory DynamoDB Table stand-in for the session-state store."""
+
+    def __init__(self) -> None:
+        self.items: dict[str, dict[str, Any]] = {}
+
+    def update_item(
+        self,
+        Key: dict[str, Any],
+        UpdateExpression: str,
+        ExpressionAttributeValues: dict[str, Any],
+    ) -> None:
+        item = self.items.setdefault(Key["session_id"], {})
+        if "ADD pending_tool_ids :tid" in UpdateExpression:
+            cur = set(item.get("pending_tool_ids", set()))
+            cur |= set(ExpressionAttributeValues[":tid"])
+            item["pending_tool_ids"] = cur
+        if "DELETE pending_tool_ids :tid" in UpdateExpression:
+            cur = set(item.get("pending_tool_ids", set()))
+            cur -= set(ExpressionAttributeValues[":tid"])
+            if cur:
+                item["pending_tool_ids"] = cur
+            else:
+                item.pop("pending_tool_ids", None)
+        if "SET undo_stack_json = :stack" in UpdateExpression:
+            item["undo_stack_json"] = ExpressionAttributeValues[":stack"]
+        if ":ttl" in ExpressionAttributeValues:
+            item["expires_at"] = ExpressionAttributeValues[":ttl"]
+
+    def get_item(
+        self, Key: dict[str, Any], ProjectionExpression: str | None = None
+    ) -> dict[str, Any]:
+        item = self.items.get(Key["session_id"])
+        return {"Item": dict(item)} if item is not None else {}
+
+
+class _FakeTextBlock:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _FakeToolUseBlock:
+    def __init__(self, name: str, tool_input: dict[str, Any]) -> None:
+        self.name = name
+        self.input = tool_input
+
+
+class _FakeAssistantMessage:
+    def __init__(self, content: list[Any]) -> None:
+        self.content = content
+
+
+class _FakeResultMessage:
+    def __init__(self, result: str, is_error: bool = False) -> None:
+        self.result = result
+        self.is_error = is_error
+
+
+def _make_fake_client(messages: list[Any]) -> Any:
+    """Build a ClaudeSDKClient replacement yielding scripted messages."""
+
+    class _FakeClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "_FakeClient":
+            return self
+
+        async def __aexit__(self, *exc: Any) -> bool:
+            return False
+
+        async def query(self, prompt: str) -> None:
+            self.prompt = prompt
+
+        async def receive_response(self) -> Any:
+            for message in messages:
+                yield message
+
+    return _FakeClient
+
+
+def _patch_streaming_sdk(messages: list[Any], table: Any) -> Any:
+    """Patch the agent SDK symbols, options builder, and session-state store."""
+    resource = MagicMock()
+    resource.Table.return_value = table
+    patches = [
+        patch("claude_agent_sdk.ClaudeSDKClient", _make_fake_client(messages)),
+        patch("claude_agent_sdk.AssistantMessage", _FakeAssistantMessage),
+        patch("claude_agent_sdk.TextBlock", _FakeTextBlock),
+        patch("claude_agent_sdk.ToolUseBlock", _FakeToolUseBlock),
+        patch("claude_agent_sdk.ResultMessage", _FakeResultMessage),
+        patch("nat.agent.create_nat_options", return_value=MagicMock()),
+        patch.object(
+            session_state, "get_dynamodb_resource", return_value=resource
+        ),
+    ]
+
+    class _Combined:
+        def __enter__(self) -> None:
+            for p in patches:
+                p.start()
+
+        def __exit__(self, *exc: Any) -> bool:
+            for p in patches:
+                p.stop()
+            return False
+
+    return _Combined()
+
+
+def _collect_stream(**kwargs: Any) -> list[str]:
+    async def _run() -> list[str]:
+        events = []
+        async for event in stream_agent_response(**kwargs):
+            events.append(event)
+        return events
+
+    return run_async(_run())
+
+
+class TestServerSideConfirmation:
+    """The confirmation gate must be authoritative server-side (issue #12)."""
+
+    DELETE_INPUT = {"id": "contact-5"}
+    SESSION = "testnation#user-test-12345"
+
+    def _delete_message(self) -> _FakeAssistantMessage:
+        return _FakeAssistantMessage(
+            [_FakeToolUseBlock("delete_contact", self.DELETE_INPUT)]
+        )
+
+    def test_unconfirmed_destructive_tool_prompts_and_records(self) -> None:
+        """First touch of a destructive tool prompts AND records server-side."""
+        table = _SessionStateFakeTable()
+        with _patch_streaming_sdk([self._delete_message()], table):
+            events = _collect_stream(
+                query="delete contact 5",
+                nb_slug=TEST_NB_SLUG,
+                nb_token=TEST_NB_TOKEN,
+                model="claude-haiku-4-5-20251001",
+                confirmed_tools=set(),
+                session_id=self.SESSION,
+            )
+
+        # The destructive tool was NOT executed; a confirmation was requested.
+        assert any("event: confirmation_required" in e for e in events)
+        assert not any("event: tool_use" in e for e in events)
+        # And the server recorded that it legitimately prompted for this tool_id.
+        tool_id = compute_tool_id("delete_contact", self.DELETE_INPUT)
+        assert tool_id in table.items[self.SESSION]["pending_tool_ids"]
+
+    def test_forged_confirmation_does_not_execute(self) -> None:
+        """A forged confirmed_tools value (no server record) cannot execute.
+
+        This is the core bypass from issue #12: a client that pre-confirms a
+        tool_id it was never prompted for must still be forced through a real
+        confirmation round-trip.
+        """
+        table = _SessionStateFakeTable()
+        forged_tool_id = compute_tool_id("delete_contact", self.DELETE_INPUT)
+        # The handler validates client claims via filter_authorized_confirmations,
+        # which returns empty because nothing was recorded -> confirmed is empty.
+        with _patch_streaming_sdk([self._delete_message()], table):
+            authorized = session_state.filter_authorized_confirmations(
+                self.SESSION, [forged_tool_id]
+            )
+            assert authorized == set()
+            events = _collect_stream(
+                query="delete contact 5",
+                nb_slug=TEST_NB_SLUG,
+                nb_token=TEST_NB_TOKEN,
+                model="claude-haiku-4-5-20251001",
+                confirmed_tools=authorized,
+                session_id=self.SESSION,
+            )
+
+        assert any("event: confirmation_required" in e for e in events)
+        assert not any("event: tool_use" in e for e in events)
+
+    def test_legitimate_confirm_then_execute(self) -> None:
+        """Recorded confirmation -> the destructive tool executes on resubmit."""
+        table = _SessionStateFakeTable()
+
+        # Round 1: prompt + record.
+        with _patch_streaming_sdk([self._delete_message()], table):
+            _collect_stream(
+                query="delete contact 5",
+                nb_slug=TEST_NB_SLUG,
+                nb_token=TEST_NB_TOKEN,
+                model="claude-haiku-4-5-20251001",
+                confirmed_tools=set(),
+                session_id=self.SESSION,
+            )
+
+        tool_id = compute_tool_id("delete_contact", self.DELETE_INPUT)
+
+        # Round 2: client resubmits; server validates the claim against its record.
+        with _patch_streaming_sdk([self._delete_message()], table):
+            authorized = session_state.filter_authorized_confirmations(
+                self.SESSION, [tool_id]
+            )
+            assert authorized == {tool_id}
+            events = _collect_stream(
+                query="delete contact 5",
+                nb_slug=TEST_NB_SLUG,
+                nb_token=TEST_NB_TOKEN,
+                model="claude-haiku-4-5-20251001",
+                confirmed_tools=authorized,
+                session_id=self.SESSION,
+            )
+
+        # Now the tool executes (tool_use emitted, no new confirmation prompt).
+        assert any("event: tool_use" in e for e in events)
+        assert not any("event: confirmation_required" in e for e in events)
+        # The confirmation was consumed (single-use) and cannot be replayed.
+        assert "pending_tool_ids" not in table.items[self.SESSION]
+
+    def test_non_destructive_tool_executes_without_confirmation(self) -> None:
+        table = _SessionStateFakeTable()
+        msg = _FakeAssistantMessage(
+            [_FakeToolUseBlock("list_signups", {"filter": {"email": "a@b.c"}})]
+        )
+        with _patch_streaming_sdk([msg], table):
+            events = _collect_stream(
+                query="find people",
+                nb_slug=TEST_NB_SLUG,
+                nb_token=TEST_NB_TOKEN,
+                model="claude-haiku-4-5-20251001",
+                confirmed_tools=set(),
+                session_id=self.SESSION,
+            )
+        assert any("event: tool_use" in e for e in events)
+        assert not any("event: confirmation_required" in e for e in events)
+
+
+class TestServerSideUndo:
+    """Undo history is server-maintained and never trusted from the client."""
+
+    SESSION = "testnation#user-test-12345"
+
+    def test_client_supplied_undo_stack_is_ignored(self) -> None:
+        """A forged undo_stack in the body must not reach the agent prompt."""
+        table = _SessionStateFakeTable()
+        captured: dict[str, Any] = {}
+
+        async def fake_stream(**kwargs: Any) -> Any:
+            captured.update(kwargs)
+            yield format_sse_event(SSE_EVENT_DONE, {"response": "ok", "tool_calls": []})
+
+        with patch(
+            "src.lambdas.nat_agent_streaming.handler.stream_agent_response",
+            side_effect=lambda **kw: fake_stream(**kw),
+        ), patch(
+            "src.lambdas.nat_agent_streaming.handler.verify_nation_subscription",
+            return_value={"valid": True},
+        ), patch(
+            "src.lambdas.nat_agent_streaming.handler.check_rate_limit",
+            return_value=None,
+        ), patch(
+            "src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation",
+            return_value=False,
+        ), patch(
+            "src.lambdas.nat_agent_streaming.handler.track_query_usage_nation",
+            return_value=1,
+        ), patch(
+            "src.lambdas.nat_agent_streaming.handler.get_nb_tokens_by_nation",
+            return_value=(TEST_NB_TOKEN, TEST_NB_SLUG),
+        ):
+            body = {
+                "query": "undo that",
+                "user_id": TEST_USER_ID,
+                "nation_slug": TEST_NATION_SLUG,
+                "undo_stack": [
+                    {
+                        "description": "attacker controlled",
+                        "toolName": "create_signup",
+                        "undoType": "delete_created",
+                        "undoData": {"signup_id": "victim-999"},
+                    }
+                ],
+            }
+            run_async(_drain(process_streaming_request(body)))
+
+        # stream_agent_response is invoked with a session_id, NOT the client stack.
+        assert "undo_stack" not in captured
+        assert captured["session_id"] == make_session_id(
+            TEST_USER_ID, TEST_NATION_SLUG
+        )
+
+    def test_confirmed_tools_filtered_through_server(self) -> None:
+        """process_streaming_request only forwards server-authorized tool_ids."""
+        table = _SessionStateFakeTable()
+        captured: dict[str, Any] = {}
+
+        async def fake_stream(**kwargs: Any) -> Any:
+            captured.update(kwargs)
+            yield format_sse_event(SSE_EVENT_DONE, {"response": "ok", "tool_calls": []})
+
+        resource = MagicMock()
+        resource.Table.return_value = table
+
+        with patch(
+            "src.lambdas.nat_agent_streaming.handler.stream_agent_response",
+            side_effect=lambda **kw: fake_stream(**kw),
+        ), patch(
+            "src.lambdas.nat_agent_streaming.handler.verify_nation_subscription",
+            return_value={"valid": True},
+        ), patch(
+            "src.lambdas.nat_agent_streaming.handler.check_rate_limit",
+            return_value=None,
+        ), patch(
+            "src.lambdas.nat_agent_streaming.handler.check_and_reset_billing_cycle_nation",
+            return_value=False,
+        ), patch(
+            "src.lambdas.nat_agent_streaming.handler.track_query_usage_nation",
+            return_value=1,
+        ), patch(
+            "src.lambdas.nat_agent_streaming.handler.get_nb_tokens_by_nation",
+            return_value=(TEST_NB_TOKEN, TEST_NB_SLUG),
+        ), patch.object(
+            session_state, "get_dynamodb_resource", return_value=resource
+        ):
+            forged = compute_tool_id("delete_contact", {"id": "1"})
+            body = {
+                "query": "do it",
+                "user_id": TEST_USER_ID,
+                "nation_slug": TEST_NATION_SLUG,
+                "confirmed_tools": [forged],
+            }
+            run_async(_drain(process_streaming_request(body)))
+
+        # The forged tool_id is dropped: nothing was recorded server-side.
+        assert captured["confirmed_tools"] == set()
+
+    def test_build_undo_entry_add_to_list(self) -> None:
+        entry = _build_undo_entry("add_to_list", {"person_id": "1", "list_id": "2"})
+        assert entry is not None
+        assert entry["undoType"] == "remove_from_list"
+        assert entry["undoData"] == {"person_id": "1", "list_id": "2"}
+
+    def test_build_undo_entry_unreconstructable_returns_none(self) -> None:
+        # create_signup's undo needs the created id from the tool *result*, which
+        # the server cannot observe -> not recorded (safe, not forgeable).
+        assert _build_undo_entry("create_signup", {"first_name": "A"}) is None
+
+
+async def _drain(agen: Any) -> list[str]:
+    events = []
+    async for event in agen:
+        events.append(event)
+    return events

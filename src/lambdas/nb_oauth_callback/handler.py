@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, TypedDict
 from urllib.parse import parse_qs, urlencode
@@ -20,6 +21,25 @@ from urllib.parse import parse_qs, urlencode
 import boto3
 import urllib3
 from botocore.exceptions import ClientError
+
+try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
+    from src.lambdas.shared.oauth_state import (
+        OAuthStateError,
+        validate_oauth_state,
+    )
+    from src.lambdas.shared.session_token import (
+        get_session_secret,
+        mint_session_token,
+    )
+except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
+    from shared.oauth_state import (  # type: ignore[no-redef]
+        OAuthStateError,
+        validate_oauth_state,
+    )
+    from shared.session_token import (  # type: ignore[no-redef]
+        get_session_secret,
+        mint_session_token,
+    )
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -39,6 +59,19 @@ SUCCESS_REDIRECT_URL = os.environ.get(
 ERROR_REDIRECT_URL = os.environ.get(
     "ERROR_REDIRECT_URL", "https://natassistant.com/connection-error"
 )
+
+# The nation slug arrives in the (client-supplied) OAuth ``state`` and is the
+# most security-sensitive entry point: it is interpolated into the Secrets
+# Manager path ``nat/nation/{slug}/nb-tokens`` and the NationBuilder token URL
+# host ``https://{slug}.nationbuilder.com``. Reject malformed values before
+# either is constructed. Mirrors shared.validation.NATION_SLUG_PATTERN (this
+# Lambda is packaged without shared/, so the pattern is inlined).
+NATION_SLUG_PATTERN = re.compile(r"^[a-z0-9-]{1,63}\Z")
+
+
+def is_valid_nation_slug(slug: Any) -> bool:
+    """Return True if *slug* is a non-empty, well-formed nation slug."""
+    return isinstance(slug, str) and NATION_SLUG_PATTERN.match(slug) is not None
 
 
 class LambdaResponse(TypedDict):
@@ -404,27 +437,38 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
             error_url = f"{ERROR_REDIRECT_URL}?error=missing_state"
             return create_redirect_response(error_url)
 
-        # Parse state parameter
+        # Validate and consume the OAuth state. This enforces CSRF protection
+        # (single-use, server-side nonce bound to the issued identity) and the
+        # redirect_uri allowlist. Tampered, replayed, or expired state is
+        # rejected here. The returned fields come from the trusted server-side
+        # record, not the forgeable client copy.
         try:
-            import base64
-            state_json = base64.urlsafe_b64decode(state).decode("utf-8")
-            state_data = json.loads(state_json)
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Invalid state parameter: {e}")
-            error_url = f"{ERROR_REDIRECT_URL}?error=invalid_state"
+            state_data = validate_oauth_state(state)
+        except OAuthStateError as e:
+            logger.error(f"Invalid OAuth state: {e}")
+            error_url = f"{ERROR_REDIRECT_URL}?error={e.error_slug}"
             return create_redirect_response(error_url)
 
-        user_id = state_data.get("user_id")
-        nb_slug = state_data.get("nb_slug")
-        redirect_uri = state_data.get("redirect_uri")
+        user_id = state_data["user_id"]
+        nb_slug = state_data["nb_slug"]
+        redirect_uri = state_data["redirect_uri"]
 
         if not user_id or not nb_slug or not redirect_uri:
             logger.error("State missing required fields")
             error_url = f"{ERROR_REDIRECT_URL}?error=invalid_state"
             return create_redirect_response(error_url)
 
-        # Extract optional email from state for admin user creation
-        user_email = state_data.get("email")
+        # Reject a malformed slug before it reaches Secrets Manager / the NB token
+        # URL. This endpoint is a browser OAuth redirect, so a rejected slug is
+        # surfaced as an error redirect rather than a 400 JSON body.
+        if not is_valid_nation_slug(nb_slug):
+            logger.error(f"Invalid nation_slug in OAuth state: {nb_slug!r}")
+            error_url = f"{ERROR_REDIRECT_URL}?error=invalid_nation"
+            return create_redirect_response(error_url)
+
+        # admin_email is no longer carried in the (now trusted, single-use)
+        # state. Populating it from NationBuilder userinfo is a follow-up.
+        user_email = None
 
         logger.info(f"Processing OAuth callback for user {user_id}, nation {nb_slug}")
 
@@ -479,8 +523,27 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
 
         logger.info(f"Successfully connected NB for nation {nb_slug} (user {user_id})")
 
-        # Redirect to success page with nation info
-        success_url = f"{SUCCESS_REDIRECT_URL}?user_id={user_id}&nation={nb_slug}"
+        # Mint a short-lived signed session token. The extension stores this and
+        # sends it as `Authorization: Bearer` on every backend request; the
+        # backend derives user_id / nation_slug from its signed claims instead
+        # of trusting forgeable client headers.
+        session_token = mint_session_token(
+            user_id=user_id,
+            nation_slug=nb_slug,
+            secret=get_session_secret(),
+        )
+
+        # Redirect to success page with nation info and the session token. The
+        # token is delivered in the URL fragment so it is not sent to the
+        # success page's server or written to its access logs.
+        success_query = urlencode({"user_id": user_id, "nation": nb_slug})
+        # SUCCESS_REDIRECT_URL may already carry a query string (e.g. ?env=prod),
+        # so pick the correct separator to avoid a malformed double "?".
+        separator = "&" if "?" in SUCCESS_REDIRECT_URL else "?"
+        success_url = (
+            f"{SUCCESS_REDIRECT_URL}{separator}{success_query}"
+            f"#session_token={session_token}"
+        )
         return create_redirect_response(success_url)
 
     except ClientError as e:

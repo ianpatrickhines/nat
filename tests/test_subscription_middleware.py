@@ -16,9 +16,12 @@ from src.lambdas.shared.subscription_middleware import (
     SubscriptionMiddleware,
     SubscriptionStatus,
     UserContext,
+    extract_nation_from_headers,
     extract_user_from_headers,
+    get_nation_subscription,
     get_tenant_subscription,
     get_user_tenant_id,
+    verify_nation_subscription,
     verify_subscription,
 )
 
@@ -26,7 +29,26 @@ from src.lambdas.shared.subscription_middleware import (
 # Test data
 TEST_USER_ID = "user_test123"
 TEST_TENANT_ID = "tenant_test456"
+TEST_NATION_SLUG = "testnation"
 TEST_EMAIL = "test@example.com"
+
+
+def create_mock_nation(
+    nation_slug: str = TEST_NATION_SLUG,
+    status: str = "active",
+    plan: str = "nat",
+    queries_used_this_period: int = 0,
+    queries_limit: int = 500,
+) -> dict[str, Any]:
+    """Create a mock nation record."""
+    return {
+        "nation_slug": nation_slug,
+        "stripe_customer_id": "cus_test123",
+        "subscription_status": status,
+        "subscription_plan": plan,
+        "queries_used_this_period": queries_used_this_period,
+        "queries_limit": queries_limit,
+    }
 
 
 def create_mock_user(
@@ -314,6 +336,161 @@ class TestVerifySubscription:
         assert result["valid"] is True
         # get_user_tenant_id should not be called
         mock_get_tenant.assert_called_once_with(TEST_TENANT_ID)
+
+
+class TestExtractNationFromHeaders:
+    """Tests for extracting nation identity from headers."""
+
+    def test_extracts_user_and_nation(self) -> None:
+        """Test that user ID and nation slug are extracted from headers."""
+        headers = {
+            "X-Nat-User-Id": TEST_USER_ID,
+            "X-Nat-Nation-Slug": TEST_NATION_SLUG,
+        }
+        result = extract_nation_from_headers(headers)
+        assert result.user_id == TEST_USER_ID
+        assert result.nation_slug == TEST_NATION_SLUG
+
+    def test_handles_lowercase_headers(self) -> None:
+        """Test that lowercase headers are handled (API Gateway behavior)."""
+        headers = {
+            "x-nat-user-id": TEST_USER_ID,
+            "x-nat-nation-slug": TEST_NATION_SLUG,
+        }
+        result = extract_nation_from_headers(headers)
+        assert result.user_id == TEST_USER_ID
+        assert result.nation_slug == TEST_NATION_SLUG
+
+    def test_missing_user_id_raises_error(self) -> None:
+        """Test that missing user ID raises 401 SubscriptionError."""
+        with pytest.raises(SubscriptionError) as exc_info:
+            extract_nation_from_headers({"X-Nat-Nation-Slug": TEST_NATION_SLUG})
+        assert exc_info.value.code == SubscriptionErrorCode.MISSING_USER_ID
+        assert exc_info.value.http_status == 401
+
+    def test_missing_nation_slug_raises_error(self) -> None:
+        """Test that missing nation slug raises 401 SubscriptionError."""
+        with pytest.raises(SubscriptionError) as exc_info:
+            extract_nation_from_headers({"X-Nat-User-Id": TEST_USER_ID})
+        assert exc_info.value.code == SubscriptionErrorCode.MISSING_NATION_SLUG
+        assert exc_info.value.http_status == 401
+
+
+class TestGetNationSubscription:
+    """Tests for looking up nation subscription."""
+
+    @patch("src.lambdas.shared.subscription_middleware.get_dynamodb_resource")
+    def test_returns_nation(self, mock_dynamodb: MagicMock) -> None:
+        """Test that nation record is returned."""
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {"Item": create_mock_nation()}
+        mock_dynamodb.return_value.Table.return_value = mock_table
+
+        result = get_nation_subscription(TEST_NATION_SLUG)
+        assert result["nation_slug"] == TEST_NATION_SLUG
+        assert result["subscription_status"] == "active"
+
+    @patch("src.lambdas.shared.subscription_middleware.get_dynamodb_resource")
+    def test_nation_not_found_raises_error(self, mock_dynamodb: MagicMock) -> None:
+        """Test that missing nation raises 404 SubscriptionError."""
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {}
+        mock_dynamodb.return_value.Table.return_value = mock_table
+
+        with pytest.raises(SubscriptionError) as exc_info:
+            get_nation_subscription("nonexistent_nation")
+        assert exc_info.value.code == SubscriptionErrorCode.NATION_NOT_FOUND
+        assert exc_info.value.http_status == 404
+
+
+class TestVerifyNationSubscription:
+    """Tests for per-nation subscription verification (the billing gate)."""
+
+    @patch("src.lambdas.shared.subscription_middleware.get_nation_subscription")
+    def test_active_nation_passes(self, mock_get_nation: MagicMock) -> None:
+        """Active nation within limits returns a valid status."""
+        mock_get_nation.return_value = create_mock_nation(status="active")
+
+        result = verify_nation_subscription(TEST_USER_ID, TEST_NATION_SLUG)
+
+        assert result["valid"] is True
+        assert result["nation_slug"] == TEST_NATION_SLUG
+        assert result["subscription_status"] == "active"
+
+    @patch("src.lambdas.shared.subscription_middleware.get_nation_subscription")
+    def test_trialing_nation_passes(self, mock_get_nation: MagicMock) -> None:
+        """Trialing nation within limits returns a valid status."""
+        mock_get_nation.return_value = create_mock_nation(status="trialing")
+
+        result = verify_nation_subscription(TEST_USER_ID, TEST_NATION_SLUG)
+
+        assert result["valid"] is True
+        assert result["subscription_status"] == "trialing"
+
+    @pytest.mark.parametrize("status", ["cancelled", "past_due", "unpaid", "none"])
+    @patch("src.lambdas.shared.subscription_middleware.get_nation_subscription")
+    def test_inactive_nation_returns_402(
+        self, mock_get_nation: MagicMock, status: str
+    ) -> None:
+        """Cancelled / past-due / unpaid / none nations are blocked with 402."""
+        mock_get_nation.return_value = create_mock_nation(status=status)
+
+        with pytest.raises(SubscriptionError) as exc_info:
+            verify_nation_subscription(TEST_USER_ID, TEST_NATION_SLUG)
+
+        assert exc_info.value.code == SubscriptionErrorCode.SUBSCRIPTION_INACTIVE
+        assert exc_info.value.http_status == 402
+
+    @patch("src.lambdas.shared.subscription_middleware.get_nation_subscription")
+    def test_query_limit_exceeded_returns_403(
+        self, mock_get_nation: MagicMock
+    ) -> None:
+        """An active nation at its query cap is blocked with 403."""
+        mock_get_nation.return_value = create_mock_nation(
+            status="active",
+            queries_used_this_period=500,
+            queries_limit=500,
+        )
+
+        with pytest.raises(SubscriptionError) as exc_info:
+            verify_nation_subscription(TEST_USER_ID, TEST_NATION_SLUG)
+
+        assert exc_info.value.code == SubscriptionErrorCode.QUERY_LIMIT_EXCEEDED
+        assert exc_info.value.http_status == 403
+
+    @patch("src.lambdas.shared.subscription_middleware.get_nation_subscription")
+    def test_query_limit_not_exceeded_passes(
+        self, mock_get_nation: MagicMock
+    ) -> None:
+        """An active nation under its query cap passes."""
+        mock_get_nation.return_value = create_mock_nation(
+            status="active",
+            queries_used_this_period=499,
+            queries_limit=500,
+        )
+
+        result = verify_nation_subscription(TEST_USER_ID, TEST_NATION_SLUG)
+
+        assert result["valid"] is True
+        assert result["queries_used_this_period"] == 499
+        assert result["queries_limit"] == 500
+
+    @patch("src.lambdas.shared.subscription_middleware.get_nation_subscription")
+    def test_unlimited_plan_skips_limit_check(
+        self, mock_get_nation: MagicMock
+    ) -> None:
+        """A queries_limit of 0 means unlimited (nat_pro) and skips the cap."""
+        mock_get_nation.return_value = create_mock_nation(
+            status="active",
+            plan="nat_pro",
+            queries_used_this_period=10_000,
+            queries_limit=0,
+        )
+
+        result = verify_nation_subscription(TEST_USER_ID, TEST_NATION_SLUG)
+
+        assert result["valid"] is True
+        assert result["plan"] == "nat_pro"
 
 
 class TestSubscriptionMiddleware:

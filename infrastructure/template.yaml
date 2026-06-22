@@ -126,6 +126,82 @@ Resources:
         - Key: Project
           Value: nat
 
+  # StripeEventsTable - records processed Stripe webhook event IDs so duplicate
+  # deliveries (Stripe retries) are no-ops. TTL purges old markers automatically.
+  StripeEventsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'nat-stripe-events-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: event_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: event_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
+  # SessionStateTable - server-authoritative confirmation + undo state
+  # Holds per-session destructive-action confirmations and undo history so that
+  # neither can be forged via the request body. Rows expire via the TTL.
+  SessionStateTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'nat-session-state-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: session_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: session_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
+  # OAuthStateTable - single-use CSRF nonces for the NationBuilder OAuth flow.
+  # Each record is written at OAuth init and deleted on callback (single-use);
+  # the TTL on expires_at evicts any that are never consumed.
+  OAuthStateTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'nat-oauth-state-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: nonce
+          AttributeType: S
+      KeySchema:
+        - AttributeName: nonce
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
   # =============================================================================
   # IAM Roles
   # =============================================================================
@@ -163,6 +239,11 @@ Resources:
                   - !Sub '${TenantsTable.Arn}/index/*'
                   - !GetAtt UsersTable.Arn
                   - !Sub '${UsersTable.Arn}/index/*'
+                  - !GetAtt StripeEventsTable.Arn
+                  - !Sub '${StripeEventsTable.Arn}/index/*'
+                  - !GetAtt SessionStateTable.Arn
+                  - !Sub '${SessionStateTable.Arn}/index/*'
+                  - !GetAtt OAuthStateTable.Arn
         - PolicyName: SecretsManagerAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -282,6 +363,7 @@ Resources:
           NATIONS_TABLE: !Ref NationsTable
           TENANTS_TABLE: !Ref TenantsTable
           USERS_TABLE: !Ref UsersTable
+          STRIPE_EVENTS_TABLE: !Ref StripeEventsTable
           STRIPE_WEBHOOK_SECRET_NAME: !Sub 'nat/stripe-webhook-secret-${Environment}'
       Tags:
         - Key: Environment
@@ -355,8 +437,12 @@ Resources:
         Variables:
           NATIONS_TABLE: !Ref NationsTable
           USERS_TABLE: !Ref UsersTable
+          OAUTH_STATE_TABLE: !Ref OAuthStateTable
+          OAUTH_STATE_TTL_SECONDS: '600'
+          OAUTH_REDIRECT_URI_ALLOWLIST: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/auth/nationbuilder/callback'
           NB_CLIENT_ID_SECRET: !Sub 'nat/nb-client-id-${Environment}'
           NB_CLIENT_SECRET_SECRET: !Sub 'nat/nb-client-secret-${Environment}'
+          SESSION_JWT_SECRET_NAME: !Sub 'nat/session-jwt-secret-${Environment}'
           SUCCESS_REDIRECT_URL: !Sub 'https://natassistant.com/connected?env=${Environment}'
           ERROR_REDIRECT_URL: !Sub 'https://natassistant.com/connection-error?env=${Environment}'
       Tags:
@@ -370,6 +456,45 @@ Resources:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !Ref NBOAuthCallbackFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*'
+
+  # NationBuilder OAuth Init Lambda - issues the single-use CSRF state nonce and
+  # redirects the browser to NationBuilder's authorize endpoint.
+  NBOAuthInitFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'nat-nb-oauth-init-${Environment}'
+      Runtime: python3.11
+      Handler: handler.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          # Placeholder - actual code deployed separately
+          def handler(event, context):
+              return {"statusCode": 200, "body": "OK"}
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          OAUTH_STATE_TABLE: !Ref OAuthStateTable
+          OAUTH_STATE_TTL_SECONDS: '600'
+          OAUTH_REDIRECT_URI_ALLOWLIST: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/auth/nationbuilder/callback'
+          OAUTH_CALLBACK_URL: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/auth/nationbuilder/callback'
+          NB_CLIENT_ID_SECRET: !Sub 'nat/nb-client-id-${Environment}'
+          ERROR_REDIRECT_URL: !Sub 'https://natassistant.com/connection-error?env=${Environment}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
+  # Permission for API Gateway to invoke NB OAuth Init Lambda
+  NBOAuthInitLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref NBOAuthInitFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*'
@@ -559,6 +684,51 @@ Resources:
       ParentId: !Ref AuthResource
       PathPart: nationbuilder
 
+  # GET /auth/nationbuilder method - starts the OAuth flow (issues CSRF state)
+  AuthNBInitMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref AuthNBResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${NBOAuthInitFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: '302'
+          ResponseParameters:
+            method.response.header.Location: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # OPTIONS /auth/nationbuilder method for CORS
+  AuthNBInitOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref AuthNBResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: Empty
+
   # /auth/nationbuilder/callback resource
   AuthNBCallbackResource:
     Type: AWS::ApiGateway::Resource
@@ -656,6 +826,7 @@ Resources:
           USERS_TABLE: !Ref UsersTable
           TENANTS_TABLE: !Ref TenantsTable
           ANTHROPIC_API_KEY_SECRET: !Sub 'nat/anthropic-api-key-${Environment}'
+          SESSION_JWT_SECRET_NAME: !Sub 'nat/session-jwt-secret-${Environment}'
           CLAUDE_MODEL: 'claude-haiku-4-5-20251001'
       Tags:
         - Key: Environment
@@ -759,7 +930,9 @@ Resources:
           NATIONS_TABLE: !Ref NationsTable
           USERS_TABLE: !Ref UsersTable
           TENANTS_TABLE: !Ref TenantsTable
+          SESSION_STATE_TABLE: !Ref SessionStateTable
           ANTHROPIC_API_KEY_SECRET: !Sub 'nat/anthropic-api-key-${Environment}'
+          SESSION_JWT_SECRET_NAME: !Sub 'nat/session-jwt-secret-${Environment}'
           CLAUDE_MODEL: 'claude-haiku-4-5-20251001'
       Tags:
         - Key: Environment
@@ -810,6 +983,8 @@ Resources:
       - StripeWebhookOptionsMethod
       - StripeCheckoutMethod
       - StripeCheckoutOptionsMethod
+      - AuthNBInitMethod
+      - AuthNBInitOptionsMethod
       - AuthNBCallbackMethod
       - AuthNBCallbackOptionsMethod
       - AgentQueryMethod
@@ -868,6 +1043,30 @@ Outputs:
     Value: !GetAtt UsersTable.Arn
     Export:
       Name: !Sub '${AWS::StackName}-UsersTableArn'
+
+  StripeEventsTableName:
+    Description: Name of the Stripe events idempotency DynamoDB table
+    Value: !Ref StripeEventsTable
+    Export:
+      Name: !Sub '${AWS::StackName}-StripeEventsTableName'
+
+  StripeEventsTableArn:
+    Description: ARN of the Stripe events idempotency DynamoDB table
+    Value: !GetAtt StripeEventsTable.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-StripeEventsTableArn'
+
+  SessionStateTableName:
+    Description: Name of the Session State DynamoDB table
+    Value: !Ref SessionStateTable
+    Export:
+      Name: !Sub '${AWS::StackName}-SessionStateTableName'
+
+  SessionStateTableArn:
+    Description: ARN of the Session State DynamoDB table
+    Value: !GetAtt SessionStateTable.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SessionStateTableArn'
 
   LambdaExecutionRoleArn:
     Description: ARN of the Lambda execution role
@@ -940,6 +1139,24 @@ Outputs:
     Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/auth/nationbuilder/callback'
     Export:
       Name: !Sub '${AWS::StackName}-NBOAuthCallbackUrl'
+
+  NBOAuthInitFunctionArn:
+    Description: ARN of the NationBuilder OAuth Init Lambda function
+    Value: !GetAtt NBOAuthInitFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-NBOAuthInitFunctionArn'
+
+  NBOAuthInitUrl:
+    Description: URL of the NationBuilder OAuth init endpoint (starts the flow)
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/auth/nationbuilder'
+    Export:
+      Name: !Sub '${AWS::StackName}-NBOAuthInitUrl'
+
+  OAuthStateTableName:
+    Description: Name of the OAuth state (CSRF nonce) DynamoDB table
+    Value: !Ref OAuthStateTable
+    Export:
+      Name: !Sub '${AWS::StackName}-OAuthStateTableName'
 
   TokenRefreshFunctionArn:
     Description: ARN of the Token Refresh Lambda function

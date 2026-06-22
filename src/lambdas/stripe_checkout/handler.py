@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, TypedDict
 
 import boto3
@@ -17,6 +18,17 @@ from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+# nation_slug is validated here because it is forwarded to Stripe as checkout
+# metadata and later used by the webhook as a DynamoDB key. Mirrors
+# shared.validation.NATION_SLUG_PATTERN (this Lambda is packaged without
+# shared/, so the pattern is inlined).
+NATION_SLUG_PATTERN = re.compile(r"^[a-z0-9-]{1,63}\Z")
+
+
+def is_valid_nation_slug(slug: Any) -> bool:
+    """Return True if *slug* is a non-empty, well-formed nation slug."""
+    return isinstance(slug, str) and NATION_SLUG_PATTERN.match(slug) is not None
 
 # Environment variables
 STRIPE_SECRET_KEY_NAME = os.environ.get(
@@ -171,6 +183,15 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "Missing required field: nation_slug"}),
+                "headers": headers,
+            }
+
+        if not is_valid_nation_slug(nation_slug):
+            return {
+                "statusCode": 400,
+                "body": json.dumps({
+                    "error": "Invalid nation_slug format (must match ^[a-z0-9-]{1,63}$)"
+                }),
                 "headers": headers,
             }
 

@@ -19,9 +19,29 @@ from botocore.exceptions import ClientError
 from src.lambdas.shared.usage_tracking import (
     RateLimitError,
     check_rate_limit,
-    track_query_usage,
-    check_and_reset_billing_cycle,
+    track_query_usage_nation,
+    check_and_reset_billing_cycle_nation,
 )
+from src.lambdas.shared.subscription_middleware import (
+    SubscriptionError,
+    verify_nation_subscription,
+)
+
+try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
+    from src.lambdas.shared.session_token import (
+        SessionTokenError,
+        authenticate_request,
+    )
+except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
+    from shared.session_token import (  # type: ignore[no-redef]
+        SessionTokenError,
+        authenticate_request,
+    )
+
+try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
+    from src.lambdas.shared.validation import is_valid_nation_slug
+except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
+    from shared.validation import is_valid_nation_slug  # type: ignore[no-redef]
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -48,6 +68,7 @@ class AgentRequest(TypedDict, total=False):
 
     query: str
     user_id: str
+    nation_slug: str
     context: dict[str, Any]
 
 
@@ -87,9 +108,55 @@ def get_anthropic_api_key() -> str:
         raise
 
 
+def get_nb_tokens_by_nation(nation_slug: str) -> tuple[str, str] | None:
+    """
+    Retrieve NationBuilder tokens for a nation from Secrets Manager.
+
+    In the per-nation architecture, tokens are stored per-nation (not per-user),
+    allowing any authenticated user of the nation to use Nat.
+
+    Args:
+        nation_slug: The nation slug
+
+    Returns:
+        Tuple of (access_token, nation_slug) or None if not found
+    """
+    client = get_secrets_manager_client()
+    secret_id = f"nat/nation/{nation_slug}/nb-tokens"
+
+    try:
+        response = client.get_secret_value(SecretId=secret_id)
+        secret_str: str = response.get("SecretString", "")
+        secret_data = json.loads(secret_str)
+
+        access_token = secret_data.get("access_token")
+        stored_slug = secret_data.get("nation_slug")
+
+        if not access_token:
+            logger.error(f"Missing token for nation {nation_slug}")
+            return None
+
+        # Return the nation_slug for consistency
+        return (str(access_token), str(stored_slug or nation_slug))
+
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "")
+        if error_code == "ResourceNotFoundException":
+            logger.warning(f"No NB tokens found for nation {nation_slug}")
+            return None
+        logger.error(f"Failed to retrieve NB tokens: {e}")
+        raise
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse NB tokens JSON: {e}")
+        return None
+
+
 def get_nb_tokens(user_id: str) -> tuple[str, str] | None:
     """
-    Retrieve NationBuilder tokens for a user from Secrets Manager.
+    DEPRECATED: Retrieve NationBuilder tokens for a user from Secrets Manager.
+
+    This function is kept for backwards compatibility.
+    New code should use get_nb_tokens_by_nation().
 
     Args:
         user_id: The user ID
@@ -239,16 +306,25 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
     """
     Lambda handler for Nat agent queries.
 
+    In the per-nation architecture, NationBuilder tokens and query usage are
+    keyed by nation_slug (not user_id). Any user authenticated to a subscribed
+    nation can query Nat using the nation's shared tokens and query pool. The
+    user_id is retained only for per-user rate limiting (anti-abuse).
+
     Expected request body:
     {
         "query": "Find person by email john@example.com",
         "user_id": "uuid",
+        "nation_slug": "yournation",
         "context": {
             "page_type": "person",
             "person_name": "John Smith",
             "person_id": "12345"
         }
     }
+
+    user_id and nation_slug may alternatively be supplied via the
+    X-Nat-User-Id and X-Nat-Nation-Slug request headers.
 
     Response:
     {
@@ -260,7 +336,7 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
     headers = {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type,X-Nat-User-Id,X-Nat-Tenant-Id",
+        "Access-Control-Allow-Headers": "Content-Type,Authorization",
     }
 
     try:
@@ -282,18 +358,40 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
                 "headers": headers,
             }
 
-        # Extract required fields
-        query = body.get("query")
-        user_id = body.get("user_id")
-        page_context = body.get("context", {})
+        # Authenticate the caller. user_id and nation_slug are derived from the
+        # signed session-token claims, NOT from client-supplied body/header
+        # values (which are forgeable). This closes the IDOR: a token minted for
+        # nation A cannot act on nation B.
+        try:
+            session = authenticate_request(event)
+        except SessionTokenError as e:
+            logger.warning(f"Authentication failed: {e.code} - {e.message}")
+            return {
+                "statusCode": e.http_status,
+                "body": json.dumps({
+                    "error": e.message,
+                    "error_code": e.code,
+                }),
+                "headers": headers,
+            }
 
-        # Also check headers for user_id (middleware may have set it)
-        if not user_id:
-            request_headers = event.get("headers", {})
-            user_id = (
-                request_headers.get("X-Nat-User-Id")
-                or request_headers.get("x-nat-user-id")
-            )
+        user_id = session.user_id
+        nation_slug = session.nation_slug
+
+        # Defense in depth: the slug is token-attested (minted post-validation at
+        # OAuth connect), but it is interpolated into Secrets Manager / DynamoDB
+        # lookups, so reject a malformed value rather than build a bad key.
+        if not is_valid_nation_slug(nation_slug):
+            logger.error(f"Invalid nation_slug in session token: {nation_slug!r}")
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Invalid nation_slug format"}),
+                "headers": headers,
+            }
+
+        # Extract request payload (identity fields are ignored if present).
+        query = body.get("query")
+        page_context = body.get("context", {})
 
         if not query:
             return {
@@ -302,60 +400,34 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
                 "headers": headers,
             }
 
-        if not user_id:
-            return {
-                "statusCode": 400,
-                "body": json.dumps({"error": "Missing required field: user_id"}),
-                "headers": headers,
-            }
+        logger.info(
+            f"Processing query for nation {nation_slug}, user {user_id}: {query[:100]}..."
+        )
 
-        logger.info(f"Processing query for user {user_id}: {query[:100]}...")
+        # Check if the nation's billing cycle has reset (must run before the
+        # subscription limit check so queries_used reflects the current period).
+        check_and_reset_billing_cycle_nation(nation_slug)
 
-        # Get user info to verify NB is connected
-        user_info = get_user_info(user_id)
-        if not user_info:
+        # Verify the nation's subscription before doing any work. This is the
+        # billing gate: cancelled / past-due / over-limit nations are blocked
+        # even when they still hold valid NB tokens.
+        try:
+            verify_nation_subscription(user_id, nation_slug)
+        except SubscriptionError as e:
+            logger.warning(
+                f"Nation subscription check failed for {nation_slug}: "
+                f"{e.code.value} - {e.message}"
+            )
             return {
-                "statusCode": 404,
-                "body": json.dumps({"error": "User not found"}),
-                "headers": headers,
-            }
-
-        if not user_info.get("nb_connected"):
-            return {
-                "statusCode": 403,
+                "statusCode": e.http_status,
                 "body": json.dumps({
-                    "error": "NationBuilder not connected",
-                    "error_code": "NB_NOT_CONNECTED"
+                    "error": e.message,
+                    "error_code": e.code.value,
                 }),
                 "headers": headers,
             }
 
-        if user_info.get("nb_needs_reauth"):
-            return {
-                "statusCode": 403,
-                "body": json.dumps({
-                    "error": "NationBuilder connection needs reauthorization",
-                    "error_code": "NB_NEEDS_REAUTH"
-                }),
-                "headers": headers,
-            }
-
-        # Get tenant_id for usage tracking
-        tenant_id = user_info.get("tenant_id", "")
-        if not tenant_id:
-            return {
-                "statusCode": 403,
-                "body": json.dumps({
-                    "error": "User has no tenant association",
-                    "error_code": "NO_TENANT"
-                }),
-                "headers": headers,
-            }
-
-        # Check if billing cycle has reset
-        check_and_reset_billing_cycle(tenant_id)
-
-        # Check rate limit (5-second cooldown)
+        # Check rate limit (5-second cooldown per user, anti-abuse)
         try:
             check_rate_limit(user_id)
         except RateLimitError as e:
@@ -372,14 +444,14 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
                 },
             }
 
-        # Get NB tokens
-        tokens = get_nb_tokens(user_id)
+        # Get NB tokens for the nation
+        tokens = get_nb_tokens_by_nation(nation_slug)
         if not tokens:
             return {
                 "statusCode": 403,
                 "body": json.dumps({
-                    "error": "NationBuilder tokens not found",
-                    "error_code": "NB_TOKENS_MISSING"
+                    "error": "NationBuilder not connected for this nation",
+                    "error_code": "NB_NOT_CONNECTED"
                 }),
                 "headers": headers,
             }
@@ -409,9 +481,11 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
                 "headers": headers,
             }
 
-        # Track usage after successful query
-        new_query_count = track_query_usage(user_id, tenant_id)
-        logger.info(f"Query successful. Tenant {tenant_id} now at {new_query_count} queries")
+        # Track usage after successful query (nation-based)
+        new_query_count = track_query_usage_nation(user_id, nation_slug)
+        logger.info(
+            f"Query successful. Nation {nation_slug} now at {new_query_count} queries"
+        )
 
         return {
             "statusCode": 200,

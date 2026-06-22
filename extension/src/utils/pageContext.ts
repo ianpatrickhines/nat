@@ -18,6 +18,28 @@ export interface PageContext {
 }
 
 /**
+ * Extract the NationBuilder nation slug from a URL.
+ *
+ * NationBuilder admin lives at `https://{slug}.nationbuilder.com/*`, so the slug
+ * is the left-most subdomain label. Used so the extension can tell the backend
+ * which nation (organization) a request belongs to under the per-nation billing
+ * model.
+ *
+ * Returns the lower-cased slug, or `null` for non-NationBuilder URLs, multi-level
+ * subdomains, or anything else we can't confidently parse.
+ */
+export function extractNationSlugFromUrl(url: string): string | null {
+  try {
+    const { hostname } = new URL(url);
+    // Match exactly `{slug}.nationbuilder.com` (single subdomain label).
+    const match = hostname.match(/^([a-z0-9][a-z0-9-]*)\.nationbuilder\.com$/i);
+    return match ? match[1].toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Detect the current NationBuilder page context from URL and DOM
  */
 export function detectPageContext(): PageContext | null {

@@ -19,6 +19,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from src.lambdas.stripe_webhook.handler import (
     PLAN_QUERY_LIMITS,
@@ -32,6 +33,7 @@ TEST_CUSTOMER_ID = "cus_integration_test_123"
 TEST_SUBSCRIPTION_ID = "sub_integration_test_456"
 TEST_EMAIL = "integration.test@example.com"
 TEST_TENANT_ID = "tenant_integration_789"
+TEST_NATION_SLUG = "integrationnation"
 
 
 def create_stripe_signature(payload: str, secret: str, timestamp: int | None = None) -> str:
@@ -69,19 +71,51 @@ class MockDynamoDBTable:
         self._items: dict[str, dict[str, Any]] = {}
         if items:
             for item in items:
-                key = item.get("tenant_id") or item.get("user_id")
+                key = self._key(item)
                 if key:
                     self._items[key] = item.copy()
         self.put_calls: list[dict[str, Any]] = []
         self.update_calls: list[dict[str, Any]] = []
+        self.delete_calls: list[dict[str, Any]] = []
         self.query_calls: list[dict[str, Any]] = []
         self.query_results: list[dict[str, Any]] = []
 
-    def put_item(self, Item: dict[str, Any]) -> None:
-        key = Item.get("tenant_id") or Item.get("user_id")
+    @staticmethod
+    def _key(data: dict[str, Any]) -> Any:
+        return (
+            data.get("nation_slug")
+            or data.get("tenant_id")
+            or data.get("user_id")
+            or data.get("event_id")
+        )
+
+    def put_item(
+        self,
+        Item: dict[str, Any],
+        ConditionExpression: str | None = None,
+    ) -> None:
+        key = self._key(Item)
+        # Simulate a conditional put (idempotency marker): fail if it exists.
+        if ConditionExpression and "attribute_not_exists" in ConditionExpression:
+            if key is not None and key in self._items:
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "ConditionalCheckFailedException",
+                            "Message": "The conditional request failed",
+                        }
+                    },
+                    "PutItem",
+                )
         if key:
             self._items[key] = Item.copy()
         self.put_calls.append(Item)
+
+    def delete_item(self, Key: dict[str, Any]) -> None:
+        key = self._key(Key)
+        if key is not None and key in self._items:
+            del self._items[key]
+        self.delete_calls.append(Key)
 
     def update_item(
         self,
@@ -96,7 +130,7 @@ class MockDynamoDBTable:
             "ExpressionAttributeValues": ExpressionAttributeValues,
         })
         # Simulate update
-        key = Key.get("tenant_id") or Key.get("user_id")
+        key = self._key(Key)
         if key and key in self._items:
             for attr_key, attr_val in ExpressionAttributeValues.items():
                 attr_name = attr_key[1:]  # Remove leading :
@@ -115,37 +149,41 @@ class MockDynamoDBTable:
         return {"Items": self.query_results}
 
     def get_item(self, Key: dict[str, Any]) -> dict[str, Any]:
-        key = Key.get("tenant_id") or Key.get("user_id")
+        key = self._key(Key)
         if key and key in self._items:
             return {"Item": self._items[key]}
         return {}
 
 
 class MockDynamoDBResource:
-    """Mock DynamoDB resource."""
+    """Mock DynamoDB resource.
+
+    Routes the Stripe events idempotency table to a dedicated backing table so
+    event markers don't pollute nation-record assertions; everything else
+    resolves to the NationsTable.
+    """
 
     def __init__(
         self,
-        tenants_table: MockDynamoDBTable,
-        users_table: MockDynamoDBTable,
+        nations_table: MockDynamoDBTable,
+        events_table: MockDynamoDBTable | None = None,
     ) -> None:
-        self.tenants_table = tenants_table
-        self.users_table = users_table
+        self.nations_table = nations_table
+        self.events_table = events_table or MockDynamoDBTable()
 
     def Table(self, name: str) -> MockDynamoDBTable:
-        if "tenant" in name.lower():
-            return self.tenants_table
-        return self.users_table
+        if "stripe-events" in name:
+            return self.events_table
+        return self.nations_table
 
 
 class TestCheckoutCompletedIntegration:
     """Integration tests for checkout.session.completed event."""
 
-    def test_new_subscription_creates_tenant_and_user(self) -> None:
-        """Test that a new checkout creates both tenant and user records."""
-        tenants_table = MockDynamoDBTable()
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+    def test_new_subscription_creates_nation(self) -> None:
+        """Test that a new checkout creates a nation record."""
+        nations_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(nations_table)
 
         # Create checkout completed event
         checkout_data = {
@@ -153,7 +191,7 @@ class TestCheckoutCompletedIntegration:
             "subscription": TEST_SUBSCRIPTION_ID,
             "customer_email": TEST_EMAIL,
             "customer_details": {"email": TEST_EMAIL},
-            "metadata": {"plan": "team"},
+            "metadata": {"plan": "team", "nation_slug": TEST_NATION_SLUG},
         }
         event_payload = create_webhook_event("checkout.session.completed", checkout_data)
         body = json.dumps(event_payload)
@@ -180,42 +218,30 @@ class TestCheckoutCompletedIntegration:
         assert response["statusCode"] == 200
         assert json.loads(response["body"]) == {"received": True}
 
-        # Verify tenant was created with correct data
-        assert len(tenants_table.put_calls) == 1
-        tenant = tenants_table.put_calls[0]
-        assert tenant["stripe_customer_id"] == TEST_CUSTOMER_ID
-        assert tenant["stripe_subscription_id"] == TEST_SUBSCRIPTION_ID
-        assert tenant["stripe_subscription_status"] == "active"
-        assert tenant["plan"] == "team"
-        assert tenant["queries_limit"] == PLAN_QUERY_LIMITS["team"]
-        assert tenant["queries_this_month"] == 0
-        assert "tenant_id" in tenant
-        assert "billing_cycle_start" in tenant
-
-        # Verify user was created
-        assert len(users_table.put_calls) == 1
-        user = users_table.put_calls[0]
-        assert user["email"] == TEST_EMAIL
-        assert user["role"] == "admin"
-        assert user["nb_connected"] is False
-        assert user["nb_needs_reauth"] is False
-        assert "tenant_id" in user
-        assert user["tenant_id"] == tenant["tenant_id"]
+        # Verify nation was created with correct data. New nations begin in a
+        # trial state; the paid plan/limit is set by subscription.updated.
+        assert len(nations_table.put_calls) == 1
+        nation = nations_table.put_calls[0]
+        assert nation["nation_slug"] == TEST_NATION_SLUG
+        assert nation["stripe_customer_id"] == TEST_CUSTOMER_ID
+        assert nation["stripe_subscription_id"] == TEST_SUBSCRIPTION_ID
+        assert nation["subscription_status"] == "trialing"
+        assert nation["admin_email"] == TEST_EMAIL
+        assert nation["queries_used_this_period"] == 0
+        assert "billing_period_start" in nation
 
     def test_existing_customer_not_duplicated(self) -> None:
-        """Test that existing customer's tenant is not duplicated."""
-        tenants_table = MockDynamoDBTable()
-        tenants_table.query_results = [{"tenant_id": TEST_TENANT_ID}]
-
-        users_table = MockDynamoDBTable()
-        users_table.query_results = [{"user_id": "existing-user"}]
-
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+        """Test that an existing nation is updated, not duplicated."""
+        nations_table = MockDynamoDBTable([
+            {"nation_slug": TEST_NATION_SLUG, "stripe_customer_id": TEST_CUSTOMER_ID}
+        ])
+        mock_resource = MockDynamoDBResource(nations_table)
 
         checkout_data = {
             "customer": TEST_CUSTOMER_ID,
             "subscription": TEST_SUBSCRIPTION_ID,
             "customer_email": TEST_EMAIL,
+            "metadata": {"plan": "team", "nation_slug": TEST_NATION_SLUG},
         }
         event_payload = create_webhook_event("checkout.session.completed", checkout_data)
         body = json.dumps(event_payload)
@@ -239,21 +265,25 @@ class TestCheckoutCompletedIntegration:
             response = handler(lambda_event, None)
 
         assert response["statusCode"] == 200
-        # No new tenant should be created
-        assert len(tenants_table.put_calls) == 0
+        # No new nation should be created; the existing one is updated
+        assert len(nations_table.put_calls) == 0
+        assert len(nations_table.update_calls) == 1
 
     def test_checkout_with_different_plans(self) -> None:
-        """Test checkout creates correct query limits for each plan."""
+        """Test checkout applies the correct query limit per plan for an
+        already-existing nation (the plan/limit are set on the update path)."""
         for plan in ["starter", "team", "org"]:
-            tenants_table = MockDynamoDBTable()
-            users_table = MockDynamoDBTable()
-            mock_resource = MockDynamoDBResource(tenants_table, users_table)
+            nation_slug = f"nation-{plan}"
+            nations_table = MockDynamoDBTable([
+                {"nation_slug": nation_slug, "stripe_customer_id": f"{TEST_CUSTOMER_ID}_{plan}"}
+            ])
+            mock_resource = MockDynamoDBResource(nations_table)
 
             checkout_data = {
                 "customer": f"{TEST_CUSTOMER_ID}_{plan}",
                 "subscription": TEST_SUBSCRIPTION_ID,
                 "customer_email": TEST_EMAIL,
-                "metadata": {"plan": plan},
+                "metadata": {"plan": plan, "nation_slug": nation_slug},
             }
             event_payload = create_webhook_event("checkout.session.completed", checkout_data)
             body = json.dumps(event_payload)
@@ -277,9 +307,9 @@ class TestCheckoutCompletedIntegration:
                 response = handler(lambda_event, None)
 
             assert response["statusCode"] == 200
-            tenant = tenants_table.put_calls[0]
-            assert tenant["plan"] == plan
-            assert tenant["queries_limit"] == PLAN_QUERY_LIMITS[plan]
+            update = nations_table.update_calls[0]
+            assert update["ExpressionAttributeValues"][":plan"] == plan
+            assert update["ExpressionAttributeValues"][":limit"] == PLAN_QUERY_LIMITS[plan]
 
 
 class TestSubscriptionUpdatedIntegration:
@@ -287,17 +317,16 @@ class TestSubscriptionUpdatedIntegration:
 
     def test_subscription_status_update(self) -> None:
         """Test that subscription status is updated correctly."""
-        tenants_table = MockDynamoDBTable([{
-            "tenant_id": TEST_TENANT_ID,
+        nations_table = MockDynamoDBTable([{
+            "nation_slug": TEST_NATION_SLUG,
             "stripe_customer_id": TEST_CUSTOMER_ID,
-            "stripe_subscription_status": "trialing",
-            "plan": "starter",
-            "billing_cycle_start": "2025-01-01",
+            "subscription_status": "trialing",
+            "subscription_plan": "trial",
+            "billing_period_start": "2025-01-01",
         }])
-        tenants_table.query_results = [tenants_table._items[TEST_TENANT_ID]]
+        nations_table.query_results = [nations_table._items[TEST_NATION_SLUG]]
 
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+        mock_resource = MockDynamoDBResource(nations_table)
 
         subscription_data = {
             "customer": TEST_CUSTOMER_ID,
@@ -331,24 +360,23 @@ class TestSubscriptionUpdatedIntegration:
         assert response["statusCode"] == 200
 
         # Verify update was made
-        assert len(tenants_table.update_calls) == 1
-        update = tenants_table.update_calls[0]
+        assert len(nations_table.update_calls) == 1
+        update = nations_table.update_calls[0]
         assert update["ExpressionAttributeValues"][":status"] == "active"
         assert update["ExpressionAttributeValues"][":plan"] == "team"
         assert update["ExpressionAttributeValues"][":limit"] == PLAN_QUERY_LIMITS["team"]
 
     def test_billing_cycle_reset(self) -> None:
         """Test that usage is reset when billing cycle changes."""
-        tenants_table = MockDynamoDBTable([{
-            "tenant_id": TEST_TENANT_ID,
+        nations_table = MockDynamoDBTable([{
+            "nation_slug": TEST_NATION_SLUG,
             "stripe_customer_id": TEST_CUSTOMER_ID,
-            "billing_cycle_start": "2025-01-01",
-            "queries_this_month": 150,  # Had usage in old cycle
+            "billing_period_start": "2025-01-01",
+            "queries_used_this_period": 150,  # Had usage in old cycle
         }])
-        tenants_table.query_results = [tenants_table._items[TEST_TENANT_ID]]
+        nations_table.query_results = [nations_table._items[TEST_NATION_SLUG]]
 
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+        mock_resource = MockDynamoDBResource(nations_table)
 
         # New billing period starts February 1st
         new_period_start = 1738368000  # 2025-02-01 00:00:00 UTC
@@ -384,24 +412,24 @@ class TestSubscriptionUpdatedIntegration:
         assert response["statusCode"] == 200
 
         # Verify usage was reset
-        update = tenants_table.update_calls[0]
+        update = nations_table.update_calls[0]
         assert ":zero" in update["ExpressionAttributeValues"]
         assert update["ExpressionAttributeValues"][":zero"] == 0
-        assert "billing_cycle_start" in update["UpdateExpression"]
+        assert "billing_period_start" in update["UpdateExpression"]
+        assert "queries_used_this_period" in update["UpdateExpression"]
 
     def test_plan_upgrade(self) -> None:
         """Test that plan upgrade updates query limits."""
-        tenants_table = MockDynamoDBTable([{
-            "tenant_id": TEST_TENANT_ID,
+        nations_table = MockDynamoDBTable([{
+            "nation_slug": TEST_NATION_SLUG,
             "stripe_customer_id": TEST_CUSTOMER_ID,
-            "plan": "starter",
+            "subscription_plan": "nat",
             "queries_limit": PLAN_QUERY_LIMITS["starter"],
-            "billing_cycle_start": "2025-01-15",
+            "billing_period_start": "2025-01-15",
         }])
-        tenants_table.query_results = [tenants_table._items[TEST_TENANT_ID]]
+        nations_table.query_results = [nations_table._items[TEST_NATION_SLUG]]
 
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+        mock_resource = MockDynamoDBResource(nations_table)
 
         # Upgrading to organization plan
         subscription_data = {
@@ -436,7 +464,7 @@ class TestSubscriptionUpdatedIntegration:
         assert response["statusCode"] == 200
 
         # Verify plan was upgraded
-        update = tenants_table.update_calls[0]
+        update = nations_table.update_calls[0]
         assert update["ExpressionAttributeValues"][":plan"] == "org"
         assert update["ExpressionAttributeValues"][":limit"] == PLAN_QUERY_LIMITS["org"]
 
@@ -445,16 +473,15 @@ class TestSubscriptionDeletedIntegration:
     """Integration tests for customer.subscription.deleted event."""
 
     def test_subscription_cancelled(self) -> None:
-        """Test that deleted subscription marks tenant as cancelled."""
-        tenants_table = MockDynamoDBTable([{
-            "tenant_id": TEST_TENANT_ID,
+        """Test that deleted subscription marks the nation as cancelled."""
+        nations_table = MockDynamoDBTable([{
+            "nation_slug": TEST_NATION_SLUG,
             "stripe_customer_id": TEST_CUSTOMER_ID,
-            "stripe_subscription_status": "active",
+            "subscription_status": "active",
         }])
-        tenants_table.query_results = [tenants_table._items[TEST_TENANT_ID]]
+        nations_table.query_results = [nations_table._items[TEST_NATION_SLUG]]
 
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+        mock_resource = MockDynamoDBResource(nations_table)
 
         subscription_data = {
             "customer": TEST_CUSTOMER_ID,
@@ -484,8 +511,8 @@ class TestSubscriptionDeletedIntegration:
         assert response["statusCode"] == 200
 
         # Verify subscription status was updated to cancelled
-        assert len(tenants_table.update_calls) == 1
-        update = tenants_table.update_calls[0]
+        assert len(nations_table.update_calls) == 1
+        update = nations_table.update_calls[0]
         assert update["ExpressionAttributeValues"][":status"] == "cancelled"
 
 
@@ -494,13 +521,13 @@ class TestSignatureVerificationIntegration:
 
     def test_valid_signature_accepted(self) -> None:
         """Test that valid signatures are accepted."""
-        tenants_table = MockDynamoDBTable()
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+        nations_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(nations_table)
 
         event_payload = create_webhook_event("checkout.session.completed", {
             "customer": TEST_CUSTOMER_ID,
             "subscription": TEST_SUBSCRIPTION_ID,
+            "metadata": {"nation_slug": TEST_NATION_SLUG},
         })
         body = json.dumps(event_payload)
         signature = create_stripe_signature(body, TEST_WEBHOOK_SECRET)
@@ -595,13 +622,13 @@ class TestSignatureVerificationIntegration:
 
     def test_lowercase_header_accepted(self) -> None:
         """Test that lowercase stripe-signature header is accepted."""
-        tenants_table = MockDynamoDBTable()
-        users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(tenants_table, users_table)
+        nations_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(nations_table)
 
         event_payload = create_webhook_event("checkout.session.completed", {
             "customer": TEST_CUSTOMER_ID,
             "subscription": TEST_SUBSCRIPTION_ID,
+            "metadata": {"nation_slug": TEST_NATION_SLUG},
         })
         body = json.dumps(event_payload)
         signature = create_stripe_signature(body, TEST_WEBHOOK_SECRET)

@@ -13,27 +13,48 @@ import pytest
 from src.lambdas.nat_agent.handler import (
     get_anthropic_api_key,
     get_nb_tokens,
+    get_nb_tokens_by_nation,
     get_user_info,
     handler,
 )
+from src.lambdas.shared.session_token import mint_session_token
 
 
 # Test data
 TEST_USER_ID = "user-test-12345"
 TEST_TENANT_ID = "tenant-test-67890"
+TEST_NATION_SLUG = "testnation"
 TEST_NB_SLUG = "testnation"
 TEST_NB_TOKEN = "nb_test_token_abc123"
 TEST_API_KEY = "sk-ant-test-key"
+TEST_JWT_SECRET = "test-session-secret"
+
+
+def bearer(
+    user_id: str = TEST_USER_ID,
+    nation_slug: str = TEST_NATION_SLUG,
+    secret: str = TEST_JWT_SECRET,
+) -> str:
+    """Build an `Authorization: Bearer <jwt>` header value for tests."""
+    return f"Bearer {mint_session_token(user_id, nation_slug, secret)}"
 
 
 def create_api_event(
     body: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Create a mock API Gateway event."""
+    """
+    Create a mock API Gateway event.
+
+    When ``headers`` is not provided, a valid session-token Authorization header
+    for the default test user/nation is injected so most handler tests exercise
+    the post-authentication path. Pass ``headers={}`` to omit it.
+    """
+    if headers is None:
+        headers = {"Authorization": bearer()}
     return {
         "body": json.dumps(body) if body else "",
-        "headers": headers or {},
+        "headers": headers,
         "httpMethod": "POST",
         "path": "/agent/query",
     }
@@ -145,6 +166,74 @@ class TestGetNbTokens:
         assert result is None
 
 
+class TestGetNbTokensByNation:
+    """Tests for per-nation NationBuilder token retrieval."""
+
+    @patch("src.lambdas.nat_agent.handler.get_secrets_manager_client")
+    def test_get_tokens_success(self, mock_get_client: MagicMock) -> None:
+        """Test successful per-nation token retrieval."""
+        mock_client = MagicMock()
+        mock_client.get_secret_value.return_value = {
+            "SecretString": json.dumps({
+                "access_token": TEST_NB_TOKEN,
+                "nation_slug": TEST_NATION_SLUG,
+            })
+        }
+        mock_get_client.return_value = mock_client
+
+        result = get_nb_tokens_by_nation(TEST_NATION_SLUG)
+        assert result is not None
+        assert result[0] == TEST_NB_TOKEN
+        assert result[1] == TEST_NATION_SLUG
+        # Tokens are read from the per-nation secret path
+        mock_client.get_secret_value.assert_called_once_with(
+            SecretId=f"nat/nation/{TEST_NATION_SLUG}/nb-tokens"
+        )
+
+    @patch("src.lambdas.nat_agent.handler.get_secrets_manager_client")
+    def test_get_tokens_falls_back_to_arg_slug(self, mock_get_client: MagicMock) -> None:
+        """Test that the requested slug is returned when none is stored."""
+        mock_client = MagicMock()
+        mock_client.get_secret_value.return_value = {
+            "SecretString": json.dumps({
+                "access_token": TEST_NB_TOKEN,
+                # no nation_slug stored
+            })
+        }
+        mock_get_client.return_value = mock_client
+
+        result = get_nb_tokens_by_nation(TEST_NATION_SLUG)
+        assert result is not None
+        assert result == (TEST_NB_TOKEN, TEST_NATION_SLUG)
+
+    @patch("src.lambdas.nat_agent.handler.get_secrets_manager_client")
+    def test_get_tokens_not_found(self, mock_get_client: MagicMock) -> None:
+        """Test that a missing nation secret returns None."""
+        from botocore.exceptions import ClientError
+
+        mock_client = MagicMock()
+        mock_client.get_secret_value.side_effect = ClientError(
+            {"Error": {"Code": "ResourceNotFoundException", "Message": "Not found"}},
+            "GetSecretValue"
+        )
+        mock_get_client.return_value = mock_client
+
+        result = get_nb_tokens_by_nation(TEST_NATION_SLUG)
+        assert result is None
+
+    @patch("src.lambdas.nat_agent.handler.get_secrets_manager_client")
+    def test_get_tokens_missing_access_token(self, mock_get_client: MagicMock) -> None:
+        """Test that a secret without an access_token returns None."""
+        mock_client = MagicMock()
+        mock_client.get_secret_value.return_value = {
+            "SecretString": json.dumps({"nation_slug": TEST_NATION_SLUG})
+        }
+        mock_get_client.return_value = mock_client
+
+        result = get_nb_tokens_by_nation(TEST_NATION_SLUG)
+        assert result is None
+
+
 class TestGetUserInfo:
     """Tests for user info retrieval."""
 
@@ -183,7 +272,26 @@ class TestGetUserInfo:
 
 
 class TestHandler:
-    """Tests for the main Lambda handler."""
+    """Tests for the main Lambda handler (per-nation architecture)."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_session_secret(self) -> Any:
+        """Use a deterministic signing secret for session-token verification."""
+        with patch(
+            "src.lambdas.shared.session_token.get_session_secret",
+            return_value=TEST_JWT_SECRET,
+        ):
+            yield
+
+    def _valid_body(self, **overrides: Any) -> dict[str, Any]:
+        """Build a request body with all required per-nation fields."""
+        body: dict[str, Any] = {
+            "query": "test query",
+            "user_id": TEST_USER_ID,
+            "nation_slug": TEST_NATION_SLUG,
+        }
+        body.update(overrides)
+        return body
 
     def test_empty_body(self) -> None:
         """Test that empty request body returns 400."""
@@ -208,127 +316,150 @@ class TestHandler:
 
     def test_missing_query(self) -> None:
         """Test that missing query returns 400."""
-        event = create_api_event(body={"user_id": TEST_USER_ID})
+        event = create_api_event(body={
+            "user_id": TEST_USER_ID,
+            "nation_slug": TEST_NATION_SLUG,
+        })
         response = handler(event, None)
 
         assert response["statusCode"] == 400
         body = json.loads(response["body"])
         assert "query" in body["error"]
 
-    def test_missing_user_id(self) -> None:
-        """Test that missing user_id returns 400."""
-        event = create_api_event(body={"query": "test query"})
+    def test_missing_token_returns_401(self) -> None:
+        """A request with no Authorization header is rejected with 401."""
+        event = create_api_event(body=self._valid_body(), headers={})
+        response = handler(event, None)
+
+        assert response["statusCode"] == 401
+        body = json.loads(response["body"])
+        assert body["error_code"] == "MISSING_TOKEN"
+
+    def test_malformed_slug_in_token_returns_400(self) -> None:
+        """Defense in depth: a malformed slug in a validly-signed token is rejected.
+
+        The slug is interpolated into Secrets Manager / DynamoDB lookups, so even
+        a token-attested value is format-checked before use.
+        """
+        token = mint_session_token(TEST_USER_ID, "bad slug!", TEST_JWT_SECRET)
+        event = create_api_event(
+            body={"query": "test query"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
         response = handler(event, None)
 
         assert response["statusCode"] == 400
         body = json.loads(response["body"])
-        assert "user_id" in body["error"]
+        assert "Invalid nation_slug" in body["error"]
 
-    @patch("src.lambdas.nat_agent.handler.get_user_info")
-    def test_user_not_found(self, mock_get_user: MagicMock) -> None:
-        """Test that unknown user returns 404."""
-        mock_get_user.return_value = None
-
-        event = create_api_event(body={
-            "query": "test query",
-            "user_id": TEST_USER_ID,
-        })
+    def test_forged_token_returns_401(self) -> None:
+        """A token signed with the wrong secret is rejected with 401."""
+        event = create_api_event(
+            body=self._valid_body(),
+            headers={"Authorization": bearer(secret="attacker-secret")},
+        )
         response = handler(event, None)
 
-        assert response["statusCode"] == 404
+        assert response["statusCode"] == 401
         body = json.loads(response["body"])
-        assert "not found" in body["error"]
+        assert body["error_code"] == "INVALID_TOKEN"
 
-    @patch("src.lambdas.nat_agent.handler.get_user_info")
-    def test_nb_not_connected(self, mock_get_user: MagicMock) -> None:
-        """Test that NB not connected returns 403."""
-        mock_get_user.return_value = {
-            "user_id": TEST_USER_ID,
-            "nb_connected": False,
-        }
+    def test_tampered_token_returns_401(self) -> None:
+        """Flipping a character in a valid token invalidates the signature."""
+        token = mint_session_token(TEST_USER_ID, TEST_NATION_SLUG, TEST_JWT_SECRET)
+        # Corrupt the payload segment.
+        header_seg, payload_seg, sig = token.split(".")
+        tampered = f"{header_seg}.{payload_seg[:-1]}{'A' if payload_seg[-1] != 'A' else 'B'}.{sig}"
+        event = create_api_event(
+            body=self._valid_body(),
+            headers={"Authorization": f"Bearer {tampered}"},
+        )
+        response = handler(event, None)
 
-        event = create_api_event(body={
-            "query": "test query",
-            "user_id": TEST_USER_ID,
-        })
+        assert response["statusCode"] == 401
+
+    def test_expired_token_returns_401(self) -> None:
+        """An expired token is rejected with 401."""
+        expired = mint_session_token(
+            TEST_USER_ID, TEST_NATION_SLUG, TEST_JWT_SECRET, ttl_seconds=-10
+        )
+        event = create_api_event(
+            body=self._valid_body(),
+            headers={"Authorization": f"Bearer {expired}"},
+        )
+        response = handler(event, None)
+
+        assert response["statusCode"] == 401
+        body = json.loads(response["body"])
+        assert body["error_code"] == "TOKEN_EXPIRED"
+
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
+    @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
+    def test_nb_not_connected(
+        self,
+        mock_get_tokens: MagicMock,
+        mock_billing: MagicMock,
+        mock_rate: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        """Test that a nation without NB tokens returns NB_NOT_CONNECTED."""
+        mock_get_tokens.return_value = None
+
+        event = create_api_event(body=self._valid_body())
         response = handler(event, None)
 
         assert response["statusCode"] == 403
         body = json.loads(response["body"])
         assert body["error_code"] == "NB_NOT_CONNECTED"
+        # Billing reset is checked against the nation, not a tenant
+        mock_billing.assert_called_once_with(TEST_NATION_SLUG)
+        mock_get_tokens.assert_called_once_with(TEST_NATION_SLUG)
 
-    @patch("src.lambdas.nat_agent.handler.get_user_info")
-    def test_nb_needs_reauth(self, mock_get_user: MagicMock) -> None:
-        """Test that NB needs reauth returns 403."""
-        mock_get_user.return_value = {
-            "user_id": TEST_USER_ID,
-            "nb_connected": True,
-            "nb_needs_reauth": True,
-        }
-
-        event = create_api_event(body={
-            "query": "test query",
-            "user_id": TEST_USER_ID,
-        })
-        response = handler(event, None)
-
-        assert response["statusCode"] == 403
-        body = json.loads(response["body"])
-        assert body["error_code"] == "NB_NEEDS_REAUTH"
-
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
-    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle")
-    @patch("src.lambdas.nat_agent.handler.get_nb_tokens")
-    @patch("src.lambdas.nat_agent.handler.get_user_info")
-    def test_nb_tokens_missing(
+    def test_rate_limit_exceeded(
         self,
-        mock_get_user: MagicMock,
-        mock_get_tokens: MagicMock,
-        mock_billing: MagicMock,
         mock_rate: MagicMock,
+        mock_billing: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
-        """Test that missing NB tokens returns 403."""
-        mock_get_user.return_value = {
-            "user_id": TEST_USER_ID,
-            "tenant_id": TEST_TENANT_ID,
-            "nb_connected": True,
-            "nb_needs_reauth": False,
-        }
-        mock_get_tokens.return_value = None
+        """Test that exceeding the per-user rate limit returns 429."""
+        from src.lambdas.shared.usage_tracking import RateLimitError
 
-        event = create_api_event(body={
-            "query": "test query",
-            "user_id": TEST_USER_ID,
-        })
+        mock_rate.side_effect = RateLimitError(
+            message="Rate limit exceeded. Please wait 3 seconds.",
+            retry_after=3,
+        )
+
+        event = create_api_event(body=self._valid_body())
         response = handler(event, None)
 
-        assert response["statusCode"] == 403
+        assert response["statusCode"] == 429
         body = json.loads(response["body"])
-        assert body["error_code"] == "NB_TOKENS_MISSING"
+        assert body["error_code"] == "RATE_LIMIT_EXCEEDED"
+        assert response["headers"]["Retry-After"] == "3"
 
-    @patch("src.lambdas.nat_agent.handler.track_query_usage")
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent.handler.track_query_usage_nation")
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
-    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
     @patch("src.lambdas.nat_agent.handler.asyncio")
-    @patch("src.lambdas.nat_agent.handler.get_nb_tokens")
-    @patch("src.lambdas.nat_agent.handler.get_user_info")
+    @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
     def test_successful_query(
         self,
-        mock_get_user: MagicMock,
         mock_get_tokens: MagicMock,
         mock_asyncio: MagicMock,
         mock_billing: MagicMock,
         mock_rate: MagicMock,
         mock_track: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
-        """Test successful agent query."""
-        mock_get_user.return_value = {
-            "user_id": TEST_USER_ID,
-            "tenant_id": TEST_TENANT_ID,
-            "nb_connected": True,
-            "nb_needs_reauth": False,
-        }
+        """Test successful agent query charges usage to the nation."""
         mock_get_tokens.return_value = (TEST_NB_TOKEN, TEST_NB_SLUG)
+        mock_track.return_value = 42
 
         # Mock the async query result
         mock_event_loop = MagicMock()
@@ -339,39 +470,36 @@ class TestHandler:
         }
         mock_asyncio.get_event_loop.return_value = mock_event_loop
 
-        event = create_api_event(body={
-            "query": "Find person by email john@example.com",
-            "user_id": TEST_USER_ID,
-        })
+        event = create_api_event(body=self._valid_body(
+            query="Find person by email john@example.com",
+        ))
         response = handler(event, None)
 
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
         assert "Found John Smith" in body["response"]
         assert len(body["tool_calls"]) == 1
+        # Usage is charged to the nation, keyed by the requesting user
+        mock_track.assert_called_once_with(TEST_USER_ID, TEST_NATION_SLUG)
+        # The subscription gate is checked for the nation before processing
+        mock_verify.assert_called_once_with(TEST_USER_ID, TEST_NATION_SLUG)
 
-    @patch("src.lambdas.nat_agent.handler.track_query_usage")
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent.handler.track_query_usage_nation")
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
-    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
     @patch("src.lambdas.nat_agent.handler.asyncio")
-    @patch("src.lambdas.nat_agent.handler.get_nb_tokens")
-    @patch("src.lambdas.nat_agent.handler.get_user_info")
+    @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
     def test_query_with_context(
         self,
-        mock_get_user: MagicMock,
         mock_get_tokens: MagicMock,
         mock_asyncio: MagicMock,
         mock_billing: MagicMock,
         mock_rate: MagicMock,
         mock_track: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
         """Test query with page context."""
-        mock_get_user.return_value = {
-            "user_id": TEST_USER_ID,
-            "tenant_id": TEST_TENANT_ID,
-            "nb_connected": True,
-            "nb_needs_reauth": False,
-        }
         mock_get_tokens.return_value = (TEST_NB_TOKEN, TEST_NB_SLUG)
 
         # Mock the async query result
@@ -383,39 +511,34 @@ class TestHandler:
         }
         mock_asyncio.get_event_loop.return_value = mock_event_loop
 
-        event = create_api_event(body={
-            "query": "Tag this person as a donor",
-            "user_id": TEST_USER_ID,
-            "context": {
+        event = create_api_event(body=self._valid_body(
+            query="Tag this person as a donor",
+            context={
                 "page_type": "person",
                 "person_name": "John Smith",
                 "person_id": "12345",
             },
-        })
+        ))
         response = handler(event, None)
 
         assert response["statusCode"] == 200
 
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent.handler.track_query_usage_nation")
     @patch("src.lambdas.nat_agent.handler.check_rate_limit")
-    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
     @patch("src.lambdas.nat_agent.handler.asyncio")
-    @patch("src.lambdas.nat_agent.handler.get_nb_tokens")
-    @patch("src.lambdas.nat_agent.handler.get_user_info")
+    @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
     def test_agent_error(
         self,
-        mock_get_user: MagicMock,
         mock_get_tokens: MagicMock,
         mock_asyncio: MagicMock,
         mock_billing: MagicMock,
         mock_rate: MagicMock,
+        mock_track: MagicMock,
+        mock_verify: MagicMock,
     ) -> None:
-        """Test agent error handling."""
-        mock_get_user.return_value = {
-            "user_id": TEST_USER_ID,
-            "tenant_id": TEST_TENANT_ID,
-            "nb_connected": True,
-            "nb_needs_reauth": False,
-        }
+        """Test agent error handling does not charge usage."""
         mock_get_tokens.return_value = (TEST_NB_TOKEN, TEST_NB_SLUG)
 
         # Mock the async query result with error
@@ -427,50 +550,144 @@ class TestHandler:
         }
         mock_asyncio.get_event_loop.return_value = mock_event_loop
 
-        event = create_api_event(body={
-            "query": "test query",
-            "user_id": TEST_USER_ID,
-        })
+        event = create_api_event(body=self._valid_body())
         response = handler(event, None)
 
         assert response["statusCode"] == 500
         body = json.loads(response["body"])
         assert body["error_code"] == "AGENT_ERROR"
+        # No usage should be charged when the agent fails
+        mock_track.assert_not_called()
 
-    def test_user_id_from_header(self) -> None:
-        """Test that user_id can be extracted from headers."""
-        with patch("src.lambdas.nat_agent.handler.get_user_info") as mock_get_user:
-            mock_get_user.return_value = None
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
+    @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
+    def test_forged_headers_are_ignored_idor_closed(
+        self,
+        mock_get_tokens: MagicMock,
+        mock_billing: MagicMock,
+        mock_rate: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        """
+        IDOR closure: a valid token for nation A cannot be used to act on
+        nation B by supplying forged X-Nat-* headers. Identity comes from the
+        token claims only.
+        """
+        mock_get_tokens.return_value = None  # Stop after token lookup
 
-            event = create_api_event(
-                body={"query": "test query"},
-                headers={"X-Nat-User-Id": TEST_USER_ID},
-            )
-            response = handler(event, None)
+        event = create_api_event(
+            body={"query": "test query", "nation_slug": "victim-nation"},
+            headers={
+                "Authorization": bearer(TEST_USER_ID, TEST_NATION_SLUG),
+                # Attacker tries to target another nation via legacy headers.
+                "X-Nat-User-Id": "attacker",
+                "X-Nat-Nation-Slug": "victim-nation",
+            },
+        )
+        response = handler(event, None)
 
-            # Should reach user lookup (returns 404 since user not found)
-            assert response["statusCode"] == 404
-            mock_get_user.assert_called_once_with(TEST_USER_ID)
+        assert response["statusCode"] == 403
+        body = json.loads(response["body"])
+        assert body["error_code"] == "NB_NOT_CONNECTED"
+        # The token's nation is used, NOT the forged header/body nation.
+        mock_get_tokens.assert_called_once_with(TEST_NATION_SLUG)
+        mock_billing.assert_called_once_with(TEST_NATION_SLUG)
+        mock_verify.assert_called_once_with(TEST_USER_ID, TEST_NATION_SLUG)
 
-    def test_user_id_from_lowercase_header(self) -> None:
-        """Test that user_id can be extracted from lowercase headers."""
-        with patch("src.lambdas.nat_agent.handler.get_user_info") as mock_get_user:
-            mock_get_user.return_value = None
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
+    @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
+    def test_body_nation_slug_is_ignored(
+        self,
+        mock_get_tokens: MagicMock,
+        mock_billing: MagicMock,
+        mock_rate: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        """A nation_slug in the request body cannot override the token claim."""
+        mock_get_tokens.return_value = None
 
-            event = create_api_event(
-                body={"query": "test query"},
-                headers={"x-nat-user-id": TEST_USER_ID},
-            )
-            response = handler(event, None)
+        event = create_api_event(
+            body={"query": "test query", "nation_slug": "other-nation"},
+            headers={"Authorization": bearer(TEST_USER_ID, TEST_NATION_SLUG)},
+        )
+        response = handler(event, None)
 
-            # Should reach user lookup (returns 404 since user not found)
-            assert response["statusCode"] == 404
-            mock_get_user.assert_called_once_with(TEST_USER_ID)
+        assert response["statusCode"] == 403
+        mock_get_tokens.assert_called_once_with(TEST_NATION_SLUG)
+
+    @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
+    @patch("src.lambdas.nat_agent.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
+    def test_inactive_subscription_returns_402(
+        self,
+        mock_billing: MagicMock,
+        mock_verify: MagicMock,
+        mock_rate: MagicMock,
+        mock_get_tokens: MagicMock,
+    ) -> None:
+        """A cancelled/past-due nation is blocked with 402 before any work."""
+        from src.lambdas.shared.subscription_middleware import (
+            SubscriptionError,
+            SubscriptionErrorCode,
+        )
+
+        mock_verify.side_effect = SubscriptionError(
+            code=SubscriptionErrorCode.SUBSCRIPTION_INACTIVE,
+            message="Nation subscription is not active (status: cancelled).",
+            http_status=402,
+        )
+
+        event = create_api_event(body=self._valid_body())
+        response = handler(event, None)
+
+        assert response["statusCode"] == 402
+        body = json.loads(response["body"])
+        assert body["error_code"] == "SUBSCRIPTION_INACTIVE"
+        # Gate runs before NB tokens / rate limit, so neither is reached
+        mock_get_tokens.assert_not_called()
+        mock_rate.assert_not_called()
+
+    @patch("src.lambdas.nat_agent.handler.get_nb_tokens_by_nation")
+    @patch("src.lambdas.nat_agent.handler.check_rate_limit")
+    @patch("src.lambdas.nat_agent.handler.verify_nation_subscription")
+    @patch("src.lambdas.nat_agent.handler.check_and_reset_billing_cycle_nation")
+    def test_query_limit_exceeded_returns_403(
+        self,
+        mock_billing: MagicMock,
+        mock_verify: MagicMock,
+        mock_rate: MagicMock,
+        mock_get_tokens: MagicMock,
+    ) -> None:
+        """A nation over its query cap is blocked with 403."""
+        from src.lambdas.shared.subscription_middleware import (
+            SubscriptionError,
+            SubscriptionErrorCode,
+        )
+
+        mock_verify.side_effect = SubscriptionError(
+            code=SubscriptionErrorCode.QUERY_LIMIT_EXCEEDED,
+            message="Monthly query limit of 500 exceeded.",
+            http_status=403,
+        )
+
+        event = create_api_event(body=self._valid_body())
+        response = handler(event, None)
+
+        assert response["statusCode"] == 403
+        body = json.loads(response["body"])
+        assert body["error_code"] == "QUERY_LIMIT_EXCEEDED"
+        mock_get_tokens.assert_not_called()
 
     def test_cors_headers_present(self) -> None:
-        """Test that CORS headers are present in response."""
+        """Test that CORS headers advertise the Authorization header."""
         event = create_api_event(body=None)
         response = handler(event, None)
 
         assert "Access-Control-Allow-Origin" in response["headers"]
         assert response["headers"]["Access-Control-Allow-Origin"] == "*"
+        assert "Authorization" in response["headers"]["Access-Control-Allow-Headers"]

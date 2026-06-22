@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import base64
 import json
+from contextlib import ExitStack
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from src.lambdas.nb_oauth_callback.handler import (
     create_redirect_response,
@@ -18,6 +20,7 @@ from src.lambdas.nb_oauth_callback.handler import (
     store_nb_tokens,
     update_user_nb_status,
 )
+from src.lambdas.shared.oauth_state import issue_oauth_state
 
 
 # Test data
@@ -32,7 +35,10 @@ TEST_REDIRECT_URI = "https://api.example.com/auth/nationbuilder/callback"
 
 
 def create_state(user_id: str, nb_slug: str, redirect_uri: str) -> str:
-    """Create a base64-encoded state parameter."""
+    """Create a legacy/plain base64-encoded state (no server-side nonce).
+
+    Used only by tests that return before state validation (e.g. missing code).
+    """
     state_data = {
         "user_id": user_id,
         "nb_slug": nb_slug,
@@ -41,12 +47,79 @@ def create_state(user_id: str, nb_slug: str, redirect_uri: str) -> str:
     return base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode()
 
 
-class MockDynamoDBTable:
-    """Mock DynamoDB table for testing."""
+class MockOAuthStateTable:
+    """In-memory stand-in for the DynamoDB OAuth state (CSRF nonce) table."""
 
     def __init__(self) -> None:
         self.items: dict[str, dict[str, Any]] = {}
+
+    def put_item(self, Item: dict[str, Any]) -> None:
+        self.items[Item["nonce"]] = dict(Item)
+
+    def delete_item(
+        self,
+        Key: dict[str, Any],
+        ConditionExpression: str | None = None,
+        ReturnValues: str | None = None,
+    ) -> dict[str, Any]:
+        nonce = Key["nonce"]
+        if nonce not in self.items:
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException"}},
+                "DeleteItem",
+            )
+        old = self.items.pop(nonce)
+        if ReturnValues == "ALL_OLD":
+            return {"Attributes": old}
+        return {}
+
+
+class MockOAuthStateResource:
+    def __init__(self, table: MockOAuthStateTable) -> None:
+        self._table = table
+
+    def Table(self, name: str) -> MockOAuthStateTable:
+        return self._table
+
+
+def oauth_state_patches(table: MockOAuthStateTable) -> list[Any]:
+    """Patches so issue_oauth_state / validate_oauth_state hit a shared mock
+    table and accept TEST_REDIRECT_URI."""
+    return [
+        patch(
+            "src.lambdas.shared.oauth_state.get_dynamodb_resource",
+            return_value=MockOAuthStateResource(table),
+        ),
+        patch(
+            "src.lambdas.shared.oauth_state.OAUTH_REDIRECT_URI_ALLOWLIST",
+            TEST_REDIRECT_URI,
+        ),
+    ]
+
+
+class MockDynamoDBTable:
+    """Mock DynamoDB table for testing (per-nation model)."""
+
+    def __init__(self) -> None:
+        self.items: dict[str, dict[str, Any]] = {}
+        self.put_calls: list[dict[str, Any]] = []
         self.update_calls: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _key(data: dict[str, Any]) -> Any:
+        return data.get("nation_slug") or data.get("user_id")
+
+    def get_item(self, Key: dict[str, Any]) -> dict[str, Any]:
+        key = self._key(Key)
+        if key is not None and key in self.items:
+            return {"Item": self.items[key]}
+        return {}
+
+    def put_item(self, Item: dict[str, Any]) -> None:
+        key = self._key(Item)
+        if key:
+            self.items[key] = Item
+        self.put_calls.append(Item)
 
     def update_item(
         self,
@@ -62,12 +135,25 @@ class MockDynamoDBTable:
 
 
 class MockDynamoDBResource:
-    """Mock DynamoDB resource for testing."""
+    """Mock DynamoDB resource for testing.
 
-    def __init__(self, users_table: MockDynamoDBTable) -> None:
+    Routes by table name so the per-nation NationsTable and the UsersTable
+    operations land on distinct backing tables.
+    """
+
+    def __init__(
+        self,
+        users_table: MockDynamoDBTable,
+        nations_table: MockDynamoDBTable | None = None,
+    ) -> None:
         self.users_table = users_table
+        self.nations_table = (
+            nations_table if nations_table is not None else MockDynamoDBTable()
+        )
 
     def Table(self, name: str) -> MockDynamoDBTable:
+        if "nation" in name.lower():
+            return self.nations_table
         return self.users_table
 
 
@@ -128,25 +214,24 @@ class TestStoreNBTokens:
     def test_updates_existing_secret(self) -> None:
         """Test that existing secret is updated."""
         mock_client = MockSecretsManagerClient()
-        mock_client.secrets[f"nat/user/{TEST_USER_ID}/nb-tokens"] = "{}"
+        mock_client.secrets[f"nat/nation/{TEST_NB_SLUG}/nb-tokens"] = "{}"
 
         with patch(
             "src.lambdas.nb_oauth_callback.handler.get_secrets_manager_client",
             return_value=mock_client,
         ):
             store_nb_tokens(
-                user_id=TEST_USER_ID,
+                nation_slug=TEST_NB_SLUG,
                 access_token=TEST_ACCESS_TOKEN,
                 refresh_token=TEST_REFRESH_TOKEN,
                 expires_in=7200,
-                nb_slug=TEST_NB_SLUG,
             )
 
         assert len(mock_client.put_calls) == 1
         secret_data = json.loads(mock_client.put_calls[0]["SecretString"])
         assert secret_data["access_token"] == TEST_ACCESS_TOKEN
         assert secret_data["refresh_token"] == TEST_REFRESH_TOKEN
-        assert secret_data["nb_slug"] == TEST_NB_SLUG
+        assert secret_data["nation_slug"] == TEST_NB_SLUG
         assert "expires_at" in secret_data
 
     def test_creates_new_secret_if_not_exists(self) -> None:
@@ -170,15 +255,14 @@ class TestStoreNBTokens:
             return_value=mock_client,
         ):
             store_nb_tokens(
-                user_id=TEST_USER_ID,
+                nation_slug=TEST_NB_SLUG,
                 access_token=TEST_ACCESS_TOKEN,
                 refresh_token=TEST_REFRESH_TOKEN,
                 expires_in=7200,
-                nb_slug=TEST_NB_SLUG,
             )
 
         assert len(mock_client.create_calls) == 1
-        assert mock_client.create_calls[0]["Name"] == f"nat/user/{TEST_USER_ID}/nb-tokens"
+        assert mock_client.create_calls[0]["Name"] == f"nat/nation/{TEST_NB_SLUG}/nb-tokens"
 
 
 class TestUpdateUserNBStatus:
@@ -317,14 +401,44 @@ class TestHandler:
         assert response["statusCode"] == 302
         assert "error=invalid_state" in response["headers"]["Location"]
 
+    def test_invalid_nation_slug_redirects_to_error(self) -> None:
+        """A malformed slug carried in a valid, server-side state is rejected
+        before any token exchange.
+
+        The slug flows into the Secrets Manager path and the NationBuilder token
+        URL host, so a bad value (here a path-traversal segment) must be rejected
+        up front. After the CSRF hardening (#11) the slug check runs once state
+        validation passes, so we issue a real server-side-backed state that binds
+        the malicious slug and assert the callback rejects it. Browser redirect,
+        so rejection is an error redirect rather than a 400 body.
+        """
+        state_table = MockOAuthStateTable()
+        with ExitStack() as stack:
+            for p in oauth_state_patches(state_table):
+                stack.enter_context(p)
+            state = issue_oauth_state(
+                TEST_USER_ID, "../../etc/passwd", TEST_REDIRECT_URI
+            )
+            event = {
+                "queryStringParameters": {
+                    "code": TEST_CODE,
+                    "state": state,
+                },
+            }
+            response = handler(event, None)
+
+        assert response["statusCode"] == 302
+        assert "error=invalid_nation" in response["headers"]["Location"]
+
     def test_successful_oauth_flow(self) -> None:
         """Test successful OAuth flow end-to-end."""
         users_table = MockDynamoDBTable()
-        mock_resource = MockDynamoDBResource(users_table)
+        nations_table = MockDynamoDBTable()
+        mock_resource = MockDynamoDBResource(users_table, nations_table)
         mock_sm_client = MockSecretsManagerClient()
         mock_sm_client.secrets["nat/nb-client-id"] = TEST_CLIENT_ID
         mock_sm_client.secrets["nat/nb-client-secret"] = TEST_CLIENT_SECRET
-        mock_sm_client.secrets[f"nat/user/{TEST_USER_ID}/nb-tokens"] = "{}"
+        mock_sm_client.secrets[f"nat/nation/{TEST_NB_SLUG}/nb-tokens"] = "{}"
 
         mock_token_response = MockHTTPResponse(
             status=200,
@@ -338,37 +452,61 @@ class TestHandler:
         mock_http = MagicMock()
         mock_http.request.return_value = mock_token_response
 
-        state = create_state(TEST_USER_ID, TEST_NB_SLUG, TEST_REDIRECT_URI)
-        event = {
-            "queryStringParameters": {
-                "code": TEST_CODE,
-                "state": state,
-            },
-        }
+        state_table = MockOAuthStateTable()
 
-        with (
-            patch(
-                "src.lambdas.nb_oauth_callback.handler.get_dynamodb_resource",
-                return_value=mock_resource,
-            ),
-            patch(
-                "src.lambdas.nb_oauth_callback.handler.get_secrets_manager_client",
-                return_value=mock_sm_client,
-            ),
-            patch(
-                "src.lambdas.nb_oauth_callback.handler.get_secret",
-                side_effect=[TEST_CLIENT_ID, TEST_CLIENT_SECRET],
-            ),
-            patch("urllib3.PoolManager", return_value=mock_http),
-        ):
+        with ExitStack() as stack:
+            for p in oauth_state_patches(state_table):
+                stack.enter_context(p)
+            # Issue a real, server-side-backed state, then run the callback.
+            state = issue_oauth_state(
+                TEST_USER_ID, TEST_NB_SLUG, TEST_REDIRECT_URI
+            )
+            event = {
+                "queryStringParameters": {"code": TEST_CODE, "state": state},
+            }
+            stack.enter_context(
+                patch(
+                    "src.lambdas.nb_oauth_callback.handler.get_dynamodb_resource",
+                    return_value=mock_resource,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "src.lambdas.nb_oauth_callback.handler.get_secrets_manager_client",
+                    return_value=mock_sm_client,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "src.lambdas.nb_oauth_callback.handler.get_secret",
+                    side_effect=[TEST_CLIENT_ID, TEST_CLIENT_SECRET],
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "src.lambdas.nb_oauth_callback.handler.get_session_secret",
+                    return_value="test-session-secret",
+                )
+            )
+            stack.enter_context(patch("urllib3.PoolManager", return_value=mock_http))
             response = handler(event, None)
 
         assert response["statusCode"] == 302
         assert "connected" in response["headers"]["Location"].lower()
         assert TEST_USER_ID in response["headers"]["Location"]
+        # A signed session token is returned to the extension via the fragment.
+        assert "#session_token=" in response["headers"]["Location"]
+        # The state nonce was consumed (single-use).
+        assert state_table.items == {}
 
-        # Verify user was updated
-        assert len(users_table.update_calls) == 1
+        # Verify nation connection record was created/updated
+        assert len(nations_table.put_calls) == 1
+        assert nations_table.put_calls[0]["nation_slug"] == TEST_NB_SLUG
+        assert nations_table.put_calls[0]["nb_connected"] is True
+
+        # Verify user was linked to the nation
+        assert len(users_table.put_calls) == 1
+        assert users_table.put_calls[0]["nation_slug"] == TEST_NB_SLUG
 
     def test_token_exchange_failure_redirects_to_error(self) -> None:
         """Test that token exchange failure redirects to error page."""
@@ -383,24 +521,28 @@ class TestHandler:
         mock_http = MagicMock()
         mock_http.request.return_value = mock_token_response
 
-        state = create_state(TEST_USER_ID, TEST_NB_SLUG, TEST_REDIRECT_URI)
-        event = {
-            "queryStringParameters": {
-                "code": TEST_CODE,
-                "state": state,
-            },
-        }
+        state_table = MockOAuthStateTable()
 
-        with (
-            patch(
-                "src.lambdas.nb_oauth_callback.handler.get_secret",
-                side_effect=[TEST_CLIENT_ID, TEST_CLIENT_SECRET],
-            ),
-            patch("urllib3.PoolManager", return_value=mock_http),
-        ):
+        with ExitStack() as stack:
+            for p in oauth_state_patches(state_table):
+                stack.enter_context(p)
+            state = issue_oauth_state(
+                TEST_USER_ID, TEST_NB_SLUG, TEST_REDIRECT_URI
+            )
+            event = {
+                "queryStringParameters": {"code": TEST_CODE, "state": state},
+            }
+            stack.enter_context(
+                patch(
+                    "src.lambdas.nb_oauth_callback.handler.get_secret",
+                    side_effect=[TEST_CLIENT_ID, TEST_CLIENT_SECRET],
+                )
+            )
+            stack.enter_context(patch("urllib3.PoolManager", return_value=mock_http))
             response = handler(event, None)
 
         assert response["statusCode"] == 302
+        # Reached token exchange (state validated) and failed there.
         assert "error" in response["headers"]["Location"]
 
     def test_null_query_params_handled(self) -> None:
@@ -426,22 +568,100 @@ class TestHandler:
         mock_http = MagicMock()
         mock_http.request.return_value = mock_token_response
 
-        state = create_state(TEST_USER_ID, TEST_NB_SLUG, TEST_REDIRECT_URI)
-        event = {
-            "queryStringParameters": {
-                "code": TEST_CODE,
-                "state": state,
-            },
-        }
+        state_table = MockOAuthStateTable()
 
-        with (
-            patch(
-                "src.lambdas.nb_oauth_callback.handler.get_secret",
-                side_effect=[TEST_CLIENT_ID, TEST_CLIENT_SECRET],
-            ),
-            patch("urllib3.PoolManager", return_value=mock_http),
-        ):
+        with ExitStack() as stack:
+            for p in oauth_state_patches(state_table):
+                stack.enter_context(p)
+            state = issue_oauth_state(
+                TEST_USER_ID, TEST_NB_SLUG, TEST_REDIRECT_URI
+            )
+            event = {
+                "queryStringParameters": {"code": TEST_CODE, "state": state},
+            }
+            stack.enter_context(
+                patch(
+                    "src.lambdas.nb_oauth_callback.handler.get_secret",
+                    side_effect=[TEST_CLIENT_ID, TEST_CLIENT_SECRET],
+                )
+            )
+            stack.enter_context(patch("urllib3.PoolManager", return_value=mock_http))
             response = handler(event, None)
 
         assert response["statusCode"] == 302
         assert "error=no_token" in response["headers"]["Location"]
+
+    def test_csrf_tampered_state_rejected(self) -> None:
+        """An attacker who swaps user_id in the state is rejected (login-CSRF)."""
+        state_table = MockOAuthStateTable()
+        with ExitStack() as stack:
+            for p in oauth_state_patches(state_table):
+                stack.enter_context(p)
+            state = issue_oauth_state(
+                TEST_USER_ID, TEST_NB_SLUG, TEST_REDIRECT_URI
+            )
+            payload = json.loads(base64.urlsafe_b64decode(state).decode())
+            payload["user_id"] = "attacker-999"
+            tampered = base64.urlsafe_b64encode(
+                json.dumps(payload).encode()
+            ).decode()
+            event = {
+                "queryStringParameters": {"code": TEST_CODE, "state": tampered},
+            }
+            response = handler(event, None)
+
+        assert response["statusCode"] == 302
+        assert "error=invalid_state" in response["headers"]["Location"]
+
+    def test_replayed_state_rejected(self) -> None:
+        """A state already consumed once cannot be reused (single-use)."""
+        state_table = MockOAuthStateTable()
+        with ExitStack() as stack:
+            for p in oauth_state_patches(state_table):
+                stack.enter_context(p)
+            state = issue_oauth_state(
+                TEST_USER_ID, TEST_NB_SLUG, TEST_REDIRECT_URI
+            )
+            # Consume the nonce out-of-band to simulate a prior successful use.
+            from src.lambdas.shared.oauth_state import validate_oauth_state
+
+            validate_oauth_state(state)
+            event = {
+                "queryStringParameters": {"code": TEST_CODE, "state": state},
+            }
+            response = handler(event, None)
+
+        assert response["statusCode"] == 302
+        assert "error=invalid_state" in response["headers"]["Location"]
+
+    def test_disallowed_redirect_uri_rejected(self) -> None:
+        """A state carrying a redirect_uri off the allowlist is rejected."""
+        state_table = MockOAuthStateTable()
+        # Issue with a permissive allowlist, validate under the strict default.
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "src.lambdas.shared.oauth_state.get_dynamodb_resource",
+                    return_value=MockOAuthStateResource(state_table),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "src.lambdas.shared.oauth_state.OAUTH_REDIRECT_URI_ALLOWLIST",
+                    "https://evil.example.com/cb",
+                )
+            )
+            state = issue_oauth_state(
+                TEST_USER_ID, TEST_NB_SLUG, "https://evil.example.com/cb"
+            )
+
+        with ExitStack() as stack:
+            for p in oauth_state_patches(state_table):
+                stack.enter_context(p)
+            event = {
+                "queryStringParameters": {"code": TEST_CODE, "state": state},
+            }
+            response = handler(event, None)
+
+        assert response["statusCode"] == 302
+        assert "error=invalid_redirect_uri" in response["headers"]["Location"]

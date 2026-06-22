@@ -65,6 +65,22 @@ const mockPages: Record<string, string> = {
     </html>
   `,
 
+  // OAuth success / connected page. The backend redirects here after the
+  // NationBuilder connect flow, delivering the session token in the URL
+  // fragment. The oauth-callback content script reads it from the fragment.
+  '/connected': `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Connected - Nat</title>
+    </head>
+    <body>
+      <h1>NationBuilder connected</h1>
+      <p>You can return to NationBuilder and start using Nat.</p>
+    </body>
+    </html>
+  `,
+
   // Event page
   '/admin/sites/testnation/pages/events/789': `
     <!DOCTYPE html>
@@ -153,7 +169,9 @@ const server = http.createServer((req, res) => {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, X-Nat-User-Id, X-Nat-Tenant-Id',
+        // Identity now travels in the signed session token via Authorization;
+        // the old X-Nat-* identity headers are no longer accepted.
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       });
       res.end();
       return;
