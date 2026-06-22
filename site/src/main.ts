@@ -134,8 +134,8 @@ document.querySelectorAll('[data-plan]').forEach(button => {
 
 // Console greeting for developers
 console.log(
-  '%cNat%c - NationBuilder AI Assistant',
-  'color: #7c3aed; font-weight: bold; font-size: 16px;',
+  '%cNat%c — AI Assistant for NationBuilder',
+  'color: #1498BE; font-weight: bold; font-size: 16px;',
   'color: inherit; font-size: 14px;'
 );
-console.log('Interested in how Nat works? We\'re built with Claude AI.');
+console.log('Built with Claude AI by Hines Digital.');
