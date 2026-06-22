@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, TypedDict
 from urllib.parse import parse_qs, urlencode
@@ -58,6 +59,19 @@ SUCCESS_REDIRECT_URL = os.environ.get(
 ERROR_REDIRECT_URL = os.environ.get(
     "ERROR_REDIRECT_URL", "https://natassistant.com/connection-error"
 )
+
+# The nation slug arrives in the (client-supplied) OAuth ``state`` and is the
+# most security-sensitive entry point: it is interpolated into the Secrets
+# Manager path ``nat/nation/{slug}/nb-tokens`` and the NationBuilder token URL
+# host ``https://{slug}.nationbuilder.com``. Reject malformed values before
+# either is constructed. Mirrors shared.validation.NATION_SLUG_PATTERN (this
+# Lambda is packaged without shared/, so the pattern is inlined).
+NATION_SLUG_PATTERN = re.compile(r"^[a-z0-9-]{1,63}\Z")
+
+
+def is_valid_nation_slug(slug: Any) -> bool:
+    """Return True if *slug* is a non-empty, well-formed nation slug."""
+    return isinstance(slug, str) and NATION_SLUG_PATTERN.match(slug) is not None
 
 
 class LambdaResponse(TypedDict):
@@ -438,6 +452,19 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         user_id = state_data["user_id"]
         nb_slug = state_data["nb_slug"]
         redirect_uri = state_data["redirect_uri"]
+
+        if not user_id or not nb_slug or not redirect_uri:
+            logger.error("State missing required fields")
+            error_url = f"{ERROR_REDIRECT_URL}?error=invalid_state"
+            return create_redirect_response(error_url)
+
+        # Reject a malformed slug before it reaches Secrets Manager / the NB token
+        # URL. This endpoint is a browser OAuth redirect, so a rejected slug is
+        # surfaced as an error redirect rather than a 400 JSON body.
+        if not is_valid_nation_slug(nb_slug):
+            logger.error(f"Invalid nation_slug in OAuth state: {nb_slug!r}")
+            error_url = f"{ERROR_REDIRECT_URL}?error=invalid_nation"
+            return create_redirect_response(error_url)
 
         # admin_email is no longer carried in the (now trusted, single-use)
         # state. Populating it from NationBuilder userinfo is a follow-up.

@@ -126,6 +126,32 @@ Resources:
         - Key: Project
           Value: nat
 
+  # StripeEventsTable - records processed Stripe webhook event IDs so duplicate
+  # deliveries (Stripe retries) are no-ops. TTL purges old markers automatically.
+  StripeEventsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'nat-stripe-events-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: event_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: event_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
   # SessionStateTable - server-authoritative confirmation + undo state
   # Holds per-session destructive-action confirmations and undo history so that
   # neither can be forged via the request body. Rows expire via the TTL.
@@ -213,6 +239,8 @@ Resources:
                   - !Sub '${TenantsTable.Arn}/index/*'
                   - !GetAtt UsersTable.Arn
                   - !Sub '${UsersTable.Arn}/index/*'
+                  - !GetAtt StripeEventsTable.Arn
+                  - !Sub '${StripeEventsTable.Arn}/index/*'
                   - !GetAtt SessionStateTable.Arn
                   - !Sub '${SessionStateTable.Arn}/index/*'
                   - !GetAtt OAuthStateTable.Arn
@@ -335,6 +363,7 @@ Resources:
           NATIONS_TABLE: !Ref NationsTable
           TENANTS_TABLE: !Ref TenantsTable
           USERS_TABLE: !Ref UsersTable
+          STRIPE_EVENTS_TABLE: !Ref StripeEventsTable
           STRIPE_WEBHOOK_SECRET_NAME: !Sub 'nat/stripe-webhook-secret-${Environment}'
       Tags:
         - Key: Environment
@@ -1014,6 +1043,18 @@ Outputs:
     Value: !GetAtt UsersTable.Arn
     Export:
       Name: !Sub '${AWS::StackName}-UsersTableArn'
+
+  StripeEventsTableName:
+    Description: Name of the Stripe events idempotency DynamoDB table
+    Value: !Ref StripeEventsTable
+    Export:
+      Name: !Sub '${AWS::StackName}-StripeEventsTableName'
+
+  StripeEventsTableArn:
+    Description: ARN of the Stripe events idempotency DynamoDB table
+    Value: !GetAtt StripeEventsTable.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-StripeEventsTableArn'
 
   SessionStateTableName:
     Description: Name of the Session State DynamoDB table

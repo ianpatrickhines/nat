@@ -401,6 +401,35 @@ class TestHandler:
         assert response["statusCode"] == 302
         assert "error=invalid_state" in response["headers"]["Location"]
 
+    def test_invalid_nation_slug_redirects_to_error(self) -> None:
+        """A malformed slug carried in a valid, server-side state is rejected
+        before any token exchange.
+
+        The slug flows into the Secrets Manager path and the NationBuilder token
+        URL host, so a bad value (here a path-traversal segment) must be rejected
+        up front. After the CSRF hardening (#11) the slug check runs once state
+        validation passes, so we issue a real server-side-backed state that binds
+        the malicious slug and assert the callback rejects it. Browser redirect,
+        so rejection is an error redirect rather than a 400 body.
+        """
+        state_table = MockOAuthStateTable()
+        with ExitStack() as stack:
+            for p in oauth_state_patches(state_table):
+                stack.enter_context(p)
+            state = issue_oauth_state(
+                TEST_USER_ID, "../../etc/passwd", TEST_REDIRECT_URI
+            )
+            event = {
+                "queryStringParameters": {
+                    "code": TEST_CODE,
+                    "state": state,
+                },
+            }
+            response = handler(event, None)
+
+        assert response["statusCode"] == 302
+        assert "error=invalid_nation" in response["headers"]["Location"]
+
     def test_successful_oauth_flow(self) -> None:
         """Test successful OAuth flow end-to-end."""
         users_table = MockDynamoDBTable()

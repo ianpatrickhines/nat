@@ -19,6 +19,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from src.lambdas.stripe_webhook.handler import (
     PLAN_QUERY_LIMITS,
@@ -75,18 +76,46 @@ class MockDynamoDBTable:
                     self._items[key] = item.copy()
         self.put_calls: list[dict[str, Any]] = []
         self.update_calls: list[dict[str, Any]] = []
+        self.delete_calls: list[dict[str, Any]] = []
         self.query_calls: list[dict[str, Any]] = []
         self.query_results: list[dict[str, Any]] = []
 
     @staticmethod
     def _key(data: dict[str, Any]) -> Any:
-        return data.get("nation_slug") or data.get("tenant_id") or data.get("user_id")
+        return (
+            data.get("nation_slug")
+            or data.get("tenant_id")
+            or data.get("user_id")
+            or data.get("event_id")
+        )
 
-    def put_item(self, Item: dict[str, Any]) -> None:
+    def put_item(
+        self,
+        Item: dict[str, Any],
+        ConditionExpression: str | None = None,
+    ) -> None:
         key = self._key(Item)
+        # Simulate a conditional put (idempotency marker): fail if it exists.
+        if ConditionExpression and "attribute_not_exists" in ConditionExpression:
+            if key is not None and key in self._items:
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "ConditionalCheckFailedException",
+                            "Message": "The conditional request failed",
+                        }
+                    },
+                    "PutItem",
+                )
         if key:
             self._items[key] = Item.copy()
         self.put_calls.append(Item)
+
+    def delete_item(self, Key: dict[str, Any]) -> None:
+        key = self._key(Key)
+        if key is not None and key in self._items:
+            del self._items[key]
+        self.delete_calls.append(Key)
 
     def update_item(
         self,
@@ -129,14 +158,22 @@ class MockDynamoDBTable:
 class MockDynamoDBResource:
     """Mock DynamoDB resource.
 
-    The webhook handler operates exclusively on the NationsTable, so a single
-    backing table is returned regardless of the requested table name.
+    Routes the Stripe events idempotency table to a dedicated backing table so
+    event markers don't pollute nation-record assertions; everything else
+    resolves to the NationsTable.
     """
 
-    def __init__(self, nations_table: MockDynamoDBTable) -> None:
+    def __init__(
+        self,
+        nations_table: MockDynamoDBTable,
+        events_table: MockDynamoDBTable | None = None,
+    ) -> None:
         self.nations_table = nations_table
+        self.events_table = events_table or MockDynamoDBTable()
 
     def Table(self, name: str) -> MockDynamoDBTable:
+        if "stripe-events" in name:
+            return self.events_table
         return self.nations_table
 
 
@@ -236,7 +273,7 @@ class TestCheckoutCompletedIntegration:
         """Test checkout applies the correct query limit per plan for an
         already-existing nation (the plan/limit are set on the update path)."""
         for plan in ["starter", "team", "org"]:
-            nation_slug = f"nation_{plan}"
+            nation_slug = f"nation-{plan}"
             nations_table = MockDynamoDBTable([
                 {"nation_slug": nation_slug, "stripe_customer_id": f"{TEST_CUSTOMER_ID}_{plan}"}
             ])
