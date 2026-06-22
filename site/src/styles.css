@@ -391,7 +391,8 @@ strong { font-weight: 600; }
 }
 
 .hero-badge {
-  display: inline-block;
+  display: block;
+  width: fit-content;
   padding: 0.4rem 1rem;
   background: rgba(20, 152, 190, 0.15);
   border: 1px solid rgba(20, 152, 190, 0.25);
@@ -400,7 +401,7 @@ strong { font-weight: 600; }
   font-weight: 600;
   letter-spacing: 0.03em;
   border-radius: 100px;
-  margin-bottom: 2rem;
+  margin: 0 auto 2rem;
   text-align: center;
 }
 
