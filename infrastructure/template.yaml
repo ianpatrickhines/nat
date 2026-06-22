@@ -126,6 +126,31 @@ Resources:
         - Key: Project
           Value: nat
 
+  # SessionStateTable - server-authoritative confirmation + undo state
+  # Holds per-session destructive-action confirmations and undo history so that
+  # neither can be forged via the request body. Rows expire via the TTL.
+  SessionStateTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'nat-session-state-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: session_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: session_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
   # OAuthStateTable - single-use CSRF nonces for the NationBuilder OAuth flow.
   # Each record is written at OAuth init and deleted on callback (single-use);
   # the TTL on expires_at evicts any that are never consumed.
@@ -188,6 +213,8 @@ Resources:
                   - !Sub '${TenantsTable.Arn}/index/*'
                   - !GetAtt UsersTable.Arn
                   - !Sub '${UsersTable.Arn}/index/*'
+                  - !GetAtt SessionStateTable.Arn
+                  - !Sub '${SessionStateTable.Arn}/index/*'
                   - !GetAtt OAuthStateTable.Arn
         - PolicyName: SecretsManagerAccess
           PolicyDocument:
@@ -874,6 +901,7 @@ Resources:
           NATIONS_TABLE: !Ref NationsTable
           USERS_TABLE: !Ref UsersTable
           TENANTS_TABLE: !Ref TenantsTable
+          SESSION_STATE_TABLE: !Ref SessionStateTable
           ANTHROPIC_API_KEY_SECRET: !Sub 'nat/anthropic-api-key-${Environment}'
           SESSION_JWT_SECRET_NAME: !Sub 'nat/session-jwt-secret-${Environment}'
           CLAUDE_MODEL: 'claude-haiku-4-5-20251001'
@@ -986,6 +1014,18 @@ Outputs:
     Value: !GetAtt UsersTable.Arn
     Export:
       Name: !Sub '${AWS::StackName}-UsersTableArn'
+
+  SessionStateTableName:
+    Description: Name of the Session State DynamoDB table
+    Value: !Ref SessionStateTable
+    Export:
+      Name: !Sub '${AWS::StackName}-SessionStateTableName'
+
+  SessionStateTableArn:
+    Description: ARN of the Session State DynamoDB table
+    Value: !GetAtt SessionStateTable.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SessionStateTableArn'
 
   LambdaExecutionRoleArn:
     Description: ARN of the Lambda execution role
