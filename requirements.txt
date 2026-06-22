@@ -9,3 +9,6 @@ python-dotenv>=1.0.0
 
 # Type hints
 typing-extensions>=4.9.0
+
+# Error tracking (optional at runtime: handlers no-op when SENTRY_DSN is unset)
+sentry-sdk>=2.0.0

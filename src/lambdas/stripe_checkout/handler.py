@@ -15,6 +15,14 @@ from typing import Any, TypedDict
 import boto3
 from botocore.exceptions import ClientError
 
+try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
+    from src.lambdas.shared.observability import capture_exception, init_sentry
+except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
+    from shared.observability import (  # type: ignore[no-redef]
+        capture_exception,
+        init_sentry,
+    )
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -142,6 +150,8 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         "Access-Control-Allow-Headers": "Content-Type",
     }
 
+    init_sentry()
+
     # Handle OPTIONS preflight
     if event.get("httpMethod") == "OPTIONS":
         return {
@@ -216,6 +226,7 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         }
     except ClientError as e:
         logger.error(f"AWS service error: {e}")
+        capture_exception(e)
         return {
             "statusCode": 500,
             "body": json.dumps({"error": "Internal server error"}),
@@ -223,6 +234,7 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         }
     except RuntimeError as e:
         logger.error(f"Stripe API error: {e}")
+        capture_exception(e)
         return {
             "statusCode": 502,
             "body": json.dumps({"error": str(e)}),
@@ -230,6 +242,7 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
         }
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+        capture_exception(e)
         return {
             "statusCode": 500,
             "body": json.dumps({"error": "Internal server error"}),

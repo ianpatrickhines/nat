@@ -19,6 +19,7 @@ from typing import Any, TypedDict
 import boto3
 from botocore.exceptions import ClientError
 
+from . import metrics
 from .session_token import (
     SessionTokenError,
     authenticate_request,
@@ -180,6 +181,9 @@ def get_nation_subscription(nation_slug: str) -> dict[str, Any]:
         item = response.get("Item")
 
         if not item:
+            metrics.emit_count(
+                metrics.NATION_NOT_FOUND, {"nation_slug": nation_slug}
+            )
             raise SubscriptionError(
                 code=SubscriptionErrorCode.NATION_NOT_FOUND,
                 message=f"Nation {nation_slug} not found. Please connect your NationBuilder account first.",
@@ -223,6 +227,10 @@ def verify_nation_subscription(
 
     # Check subscription status
     if subscription_status not in ACTIVE_STATUSES:
+        metrics.emit_count(
+            metrics.SUBSCRIPTION_VERIFICATION_FAILURE,
+            {"nation_slug": nation_slug, "reason": "inactive", "status": subscription_status},
+        )
         raise SubscriptionError(
             code=SubscriptionErrorCode.SUBSCRIPTION_INACTIVE,
             message=f"Nation subscription is not active (status: {subscription_status}). Please subscribe at https://natassistant.com/pricing",
@@ -231,11 +239,21 @@ def verify_nation_subscription(
 
     # Check query limit (0 means unlimited, skip check)
     if queries_limit > 0 and queries_used >= queries_limit:
+        metrics.emit_count(metrics.QUERY_LIMIT_HIT, {"nation_slug": nation_slug})
+        metrics.emit_count(
+            metrics.SUBSCRIPTION_VERIFICATION_FAILURE,
+            {"nation_slug": nation_slug, "reason": "query_limit"},
+        )
         raise SubscriptionError(
             code=SubscriptionErrorCode.QUERY_LIMIT_EXCEEDED,
             message=f"Monthly query limit of {queries_limit} exceeded for nation {nation_slug}. Upgrade your plan for more queries.",
             http_status=403,
         )
+
+    # Subscription is active and within limits.
+    metrics.emit_count(
+        metrics.SUBSCRIPTION_VERIFICATION, {"nation_slug": nation_slug, "plan": plan}
+    )
 
     return NationSubscriptionStatus(
         valid=True,
