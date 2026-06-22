@@ -33,11 +33,29 @@ try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
         SessionTokenError,
         authenticate_request,
     )
+    from src.lambdas.shared.session_state import (
+        append_undo_entry,
+        compute_tool_id,
+        consume_confirmation,
+        filter_authorized_confirmations,
+        get_undo_stack,
+        make_session_id,
+        record_pending_confirmation,
+    )
 except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
     from shared.session_token import (  # type: ignore[no-redef]
         SessionContext,
         SessionTokenError,
         authenticate_request,
+    )
+    from shared.session_state import (  # type: ignore[no-redef]
+        append_undo_entry,
+        compute_tool_id,
+        consume_confirmation,
+        filter_authorized_confirmations,
+        get_undo_stack,
+        make_session_id,
+        record_pending_confirmation,
     )
 
 try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
@@ -311,6 +329,43 @@ def _get_undo_instruction(
     return "This action cannot be undone"
 
 
+def _build_undo_entry(
+    tool_name: str, tool_input: dict[str, Any]
+) -> dict[str, Any] | None:
+    """
+    Build a server-side undo entry from an executed tool call, using only data
+    the server can observe (the tool name and input).
+
+    Actions whose reversal depends on the tool *result* (e.g. the id of a newly
+    created record, or a tagging id) cannot be reconstructed server-side without
+    result visibility, so they are not recorded as undoable. Failing to offer an
+    undo is safe; offering a forged one is not.
+
+    Returns ``None`` when the action is not server-reconstructable.
+    """
+    if tool_name == "add_to_list":
+        person_id = tool_input.get("person_id")
+        list_id = tool_input.get("list_id")
+        if person_id and list_id:
+            return {
+                "description": f"Add person {person_id} to list {list_id}",
+                "toolName": tool_name,
+                "undoType": "remove_from_list",
+                "undoData": {"person_id": person_id, "list_id": list_id},
+            }
+    elif tool_name == "remove_from_list":
+        person_id = tool_input.get("person_id")
+        list_id = tool_input.get("list_id")
+        if person_id and list_id:
+            return {
+                "description": f"Remove person {person_id} from list {list_id}",
+                "toolName": tool_name,
+                "undoType": "add_to_list",
+                "undoData": {"person_id": person_id, "list_id": list_id},
+            }
+    return None
+
+
 async def stream_agent_response(
     query: str,
     nb_slug: str,
@@ -318,7 +373,7 @@ async def stream_agent_response(
     model: str,
     context: dict[str, Any] | None = None,
     confirmed_tools: set[str] | None = None,
-    undo_stack: list[dict[str, Any]] | None = None
+    session_id: str | None = None
 ) -> AsyncGenerator[str, None]:
     """
     Stream responses from the Nat agent as SSE events.
@@ -329,8 +384,11 @@ async def stream_agent_response(
         nb_token: NationBuilder API token
         model: Claude model to use
         context: Optional page context from extension
-        confirmed_tools: Set of tool_id values that have been confirmed by user
-        undo_stack: List of recent undoable actions from this session
+        confirmed_tools: Set of tool_id values authorised server-side for this
+            turn (already validated against the server's pending-confirmation
+            record; never trusted directly from the client)
+        session_id: Opaque server-derived session id used to record/consume
+            confirmations and to load/append the authoritative undo history
 
     Yields:
         SSE formatted strings
@@ -367,8 +425,12 @@ async def stream_agent_response(
         if context_parts:
             context_sections.append(f"[Context: {', '.join(context_parts)}]")
 
-    # Add undo stack context if the user might be asking to undo
-    # Check for common undo phrases
+    # Add undo stack context if the user might be asking to undo.
+    # The undo history is loaded from the authoritative server-side store, NOT
+    # from the request body: a client-supplied stack is forgeable and could
+    # steer an "undo" into deleting an arbitrary record.
+    undo_stack = get_undo_stack(session_id) if session_id else []
+
     query_lower = query.lower()
     undo_phrases = ["undo", "revert", "reverse", "take back", "cancel that", "nevermind"]
     is_undo_request = any(phrase in query_lower for phrase in undo_phrases)
@@ -415,10 +477,16 @@ async def stream_agent_response(
                                 "text": block.text
                             })
                         elif isinstance(block, ToolUseBlock):
-                            # Check if this is a destructive tool requiring confirmation
-                            tool_id = f"{block.name}_{hash(json.dumps(block.input, sort_keys=True))}"
+                            # Stable id for this (tool, input) pair so the prompt
+                            # and the follow-up confirmation request agree on it.
+                            tool_id = compute_tool_id(block.name, block.input)
 
                             if block.name in DESTRUCTIVE_TOOLS and tool_id not in confirmed:
+                                # Record server-side that we legitimately prompted
+                                # for this action; only a recorded tool_id can be
+                                # honoured as confirmed on resubmission.
+                                if session_id:
+                                    record_pending_confirmation(session_id, tool_id)
                                 # Send confirmation_required event and pause
                                 yield format_sse_event(SSE_EVENT_CONFIRMATION_REQUIRED, {
                                     "tool_id": tool_id,
@@ -428,6 +496,22 @@ async def stream_agent_response(
                                 })
                                 # Return early - client must re-submit with confirmation
                                 return
+
+                            # A confirmed destructive action is single-use: consume
+                            # the record so it cannot be replayed for another turn.
+                            if (
+                                session_id
+                                and block.name in DESTRUCTIVE_TOOLS
+                                and tool_id in confirmed
+                            ):
+                                consume_confirmation(session_id, tool_id)
+
+                            # Record any server-reconstructable undoable action to
+                            # the authoritative server-side undo stack.
+                            if session_id:
+                                undo_entry = _build_undo_entry(block.name, block.input)
+                                if undo_entry is not None:
+                                    append_undo_entry(session_id, undo_entry)
 
                             # Notify client about tool invocation
                             tool_info = {
@@ -444,10 +528,13 @@ async def stream_agent_response(
                         "is_error": message.is_error,
                     })
 
-        # Send final done event with complete response
+        # Send final done event with complete response. The undo stack returned
+        # here is the authoritative server-side history (the client renders it
+        # but never supplies it back).
         yield format_sse_event(SSE_EVENT_DONE, {
             "response": "".join(full_response),
             "tool_calls": tool_calls,
+            "undo_stack": get_undo_stack(session_id) if session_id else [],
         })
 
     except Exception as e:
@@ -496,9 +583,10 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
     user_id = body.get("user_id")
     nation_slug = body.get("nation_slug")  # NEW: Nation identifier
     page_context = body.get("context", {})
+    # Client-supplied confirmations are *claims*, not authority: each must be
+    # backed by a server-side record that we actually prompted for it. The
+    # client's undo_stack is ignored entirely (maintained server-side instead).
     confirmed_tools_list: list[str] = body.get("confirmed_tools", [])
-    confirmed_tools = set(confirmed_tools_list) if confirmed_tools_list else set()
-    undo_stack: list[dict[str, Any]] = body.get("undo_stack", [])
 
     if not query:
         yield format_sse_event(SSE_EVENT_ERROR, {
@@ -576,6 +664,15 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
 
     nb_token, verified_slug = tokens
 
+    # Server-authoritative confirmation gate: keep only the tool_ids the server
+    # itself previously emitted a confirmation_required for, in this session. A
+    # forged confirmed_tools entry is dropped here and will trigger a real
+    # confirmation round-trip rather than executing a destructive tool.
+    session_id = make_session_id(user_id, nation_slug)
+    confirmed_tools = filter_authorized_confirmations(
+        session_id, confirmed_tools_list
+    )
+
     # Stream the agent response and track whether it succeeded
     stream_succeeded = False
     async for event in stream_agent_response(
@@ -585,7 +682,7 @@ async def process_streaming_request(body: dict[str, Any]) -> AsyncGenerator[str,
         model=CLAUDE_MODEL,
         context=page_context,
         confirmed_tools=confirmed_tools,
-        undo_stack=undo_stack,
+        session_id=session_id,
     ):
         yield event
         # Check if this is a successful done event (no error in response)
