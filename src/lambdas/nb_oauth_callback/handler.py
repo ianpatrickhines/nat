@@ -22,11 +22,19 @@ import urllib3
 from botocore.exceptions import ClientError
 
 try:  # Resolve in both pytest (repo root) and flattened Lambda packages.
+    from src.lambdas.shared.oauth_state import (
+        OAuthStateError,
+        validate_oauth_state,
+    )
     from src.lambdas.shared.session_token import (
         get_session_secret,
         mint_session_token,
     )
 except ModuleNotFoundError:  # pragma: no cover - exercised only in Lambda
+    from shared.oauth_state import (  # type: ignore[no-redef]
+        OAuthStateError,
+        validate_oauth_state,
+    )
     from shared.session_token import (  # type: ignore[no-redef]
         get_session_secret,
         mint_session_token,
@@ -415,27 +423,25 @@ def handler(event: dict[str, Any], context: Any) -> LambdaResponse:
             error_url = f"{ERROR_REDIRECT_URL}?error=missing_state"
             return create_redirect_response(error_url)
 
-        # Parse state parameter
+        # Validate and consume the OAuth state. This enforces CSRF protection
+        # (single-use, server-side nonce bound to the issued identity) and the
+        # redirect_uri allowlist. Tampered, replayed, or expired state is
+        # rejected here. The returned fields come from the trusted server-side
+        # record, not the forgeable client copy.
         try:
-            import base64
-            state_json = base64.urlsafe_b64decode(state).decode("utf-8")
-            state_data = json.loads(state_json)
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Invalid state parameter: {e}")
-            error_url = f"{ERROR_REDIRECT_URL}?error=invalid_state"
+            state_data = validate_oauth_state(state)
+        except OAuthStateError as e:
+            logger.error(f"Invalid OAuth state: {e}")
+            error_url = f"{ERROR_REDIRECT_URL}?error={e.error_slug}"
             return create_redirect_response(error_url)
 
-        user_id = state_data.get("user_id")
-        nb_slug = state_data.get("nb_slug")
-        redirect_uri = state_data.get("redirect_uri")
+        user_id = state_data["user_id"]
+        nb_slug = state_data["nb_slug"]
+        redirect_uri = state_data["redirect_uri"]
 
-        if not user_id or not nb_slug or not redirect_uri:
-            logger.error("State missing required fields")
-            error_url = f"{ERROR_REDIRECT_URL}?error=invalid_state"
-            return create_redirect_response(error_url)
-
-        # Extract optional email from state for admin user creation
-        user_email = state_data.get("email")
+        # admin_email is no longer carried in the (now trusted, single-use)
+        # state. Populating it from NationBuilder userinfo is a follow-up.
+        user_email = None
 
         logger.info(f"Processing OAuth callback for user {user_id}, nation {nb_slug}")
 
