@@ -16,8 +16,10 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from src.lambdas.nb_oauth_callback.handler import handler
+from src.lambdas.shared.oauth_state import issue_oauth_state
 
 
 # Test constants
@@ -32,18 +34,64 @@ TEST_ACCESS_TOKEN = "nb_access_token_abcdef"
 TEST_REFRESH_TOKEN = "nb_refresh_token_ghijkl"
 
 
+class MockStateTable:
+    """In-memory stand-in for the DynamoDB OAuth state (CSRF nonce) table."""
+
+    def __init__(self) -> None:
+        self.items: dict[str, dict[str, Any]] = {}
+
+    def put_item(self, Item: dict[str, Any]) -> None:
+        self.items[Item["nonce"]] = dict(Item)
+
+    def delete_item(
+        self,
+        Key: dict[str, Any],
+        ConditionExpression: str | None = None,
+        ReturnValues: str | None = None,
+    ) -> dict[str, Any]:
+        nonce = Key["nonce"]
+        if nonce not in self.items:
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException"}},
+                "DeleteItem",
+            )
+        old = self.items.pop(nonce)
+        return {"Attributes": old} if ReturnValues == "ALL_OLD" else {}
+
+
+class MockStateResource:
+    def __init__(self, table: MockStateTable) -> None:
+        self._table = table
+
+    def Table(self, name: str) -> MockStateTable:
+        return self._table
+
+
+@pytest.fixture(autouse=True)
+def oauth_state_backend() -> Any:
+    """Back the OAuth state store with an in-memory table and allow the test
+    redirect_uri for the whole module so issue/validate round-trip works."""
+    table = MockStateTable()
+    with (
+        patch(
+            "src.lambdas.shared.oauth_state.get_dynamodb_resource",
+            return_value=MockStateResource(table),
+        ),
+        patch(
+            "src.lambdas.shared.oauth_state.OAUTH_REDIRECT_URI_ALLOWLIST",
+            TEST_REDIRECT_URI,
+        ),
+    ):
+        yield table
+
+
 def create_oauth_state(
     user_id: str,
     nb_slug: str,
     redirect_uri: str,
 ) -> str:
-    """Create a valid OAuth state parameter."""
-    state_data = {
-        "user_id": user_id,
-        "nb_slug": nb_slug,
-        "redirect_uri": redirect_uri,
-    }
-    return base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode()
+    """Issue a valid, server-side-backed OAuth state (single-use nonce)."""
+    return issue_oauth_state(user_id, nb_slug, redirect_uri)
 
 
 class MockDynamoDBTable:

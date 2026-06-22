@@ -151,6 +151,31 @@ Resources:
         - Key: Project
           Value: nat
 
+  # OAuthStateTable - single-use CSRF nonces for the NationBuilder OAuth flow.
+  # Each record is written at OAuth init and deleted on callback (single-use);
+  # the TTL on expires_at evicts any that are never consumed.
+  OAuthStateTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'nat-oauth-state-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: nonce
+          AttributeType: S
+      KeySchema:
+        - AttributeName: nonce
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
   # =============================================================================
   # IAM Roles
   # =============================================================================
@@ -190,6 +215,7 @@ Resources:
                   - !Sub '${UsersTable.Arn}/index/*'
                   - !GetAtt SessionStateTable.Arn
                   - !Sub '${SessionStateTable.Arn}/index/*'
+                  - !GetAtt OAuthStateTable.Arn
         - PolicyName: SecretsManagerAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -382,6 +408,9 @@ Resources:
         Variables:
           NATIONS_TABLE: !Ref NationsTable
           USERS_TABLE: !Ref UsersTable
+          OAUTH_STATE_TABLE: !Ref OAuthStateTable
+          OAUTH_STATE_TTL_SECONDS: '600'
+          OAUTH_REDIRECT_URI_ALLOWLIST: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/auth/nationbuilder/callback'
           NB_CLIENT_ID_SECRET: !Sub 'nat/nb-client-id-${Environment}'
           NB_CLIENT_SECRET_SECRET: !Sub 'nat/nb-client-secret-${Environment}'
           SESSION_JWT_SECRET_NAME: !Sub 'nat/session-jwt-secret-${Environment}'
@@ -398,6 +427,45 @@ Resources:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !Ref NBOAuthCallbackFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*'
+
+  # NationBuilder OAuth Init Lambda - issues the single-use CSRF state nonce and
+  # redirects the browser to NationBuilder's authorize endpoint.
+  NBOAuthInitFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'nat-nb-oauth-init-${Environment}'
+      Runtime: python3.11
+      Handler: handler.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          # Placeholder - actual code deployed separately
+          def handler(event, context):
+              return {"statusCode": 200, "body": "OK"}
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          OAUTH_STATE_TABLE: !Ref OAuthStateTable
+          OAUTH_STATE_TTL_SECONDS: '600'
+          OAUTH_REDIRECT_URI_ALLOWLIST: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/auth/nationbuilder/callback'
+          OAUTH_CALLBACK_URL: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/auth/nationbuilder/callback'
+          NB_CLIENT_ID_SECRET: !Sub 'nat/nb-client-id-${Environment}'
+          ERROR_REDIRECT_URL: !Sub 'https://natassistant.com/connection-error?env=${Environment}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: nat
+
+  # Permission for API Gateway to invoke NB OAuth Init Lambda
+  NBOAuthInitLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref NBOAuthInitFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*'
@@ -586,6 +654,51 @@ Resources:
       RestApiId: !Ref ApiGateway
       ParentId: !Ref AuthResource
       PathPart: nationbuilder
+
+  # GET /auth/nationbuilder method - starts the OAuth flow (issues CSRF state)
+  AuthNBInitMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref AuthNBResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${NBOAuthInitFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: '302'
+          ResponseParameters:
+            method.response.header.Location: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # OPTIONS /auth/nationbuilder method for CORS
+  AuthNBInitOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref AuthNBResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: Empty
 
   # /auth/nationbuilder/callback resource
   AuthNBCallbackResource:
@@ -841,6 +954,8 @@ Resources:
       - StripeWebhookOptionsMethod
       - StripeCheckoutMethod
       - StripeCheckoutOptionsMethod
+      - AuthNBInitMethod
+      - AuthNBInitOptionsMethod
       - AuthNBCallbackMethod
       - AuthNBCallbackOptionsMethod
       - AgentQueryMethod
@@ -983,6 +1098,24 @@ Outputs:
     Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/auth/nationbuilder/callback'
     Export:
       Name: !Sub '${AWS::StackName}-NBOAuthCallbackUrl'
+
+  NBOAuthInitFunctionArn:
+    Description: ARN of the NationBuilder OAuth Init Lambda function
+    Value: !GetAtt NBOAuthInitFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-NBOAuthInitFunctionArn'
+
+  NBOAuthInitUrl:
+    Description: URL of the NationBuilder OAuth init endpoint (starts the flow)
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/auth/nationbuilder'
+    Export:
+      Name: !Sub '${AWS::StackName}-NBOAuthInitUrl'
+
+  OAuthStateTableName:
+    Description: Name of the OAuth state (CSRF nonce) DynamoDB table
+    Value: !Ref OAuthStateTable
+    Export:
+      Name: !Sub '${AWS::StackName}-OAuthStateTableName'
 
   TokenRefreshFunctionArn:
     Description: ARN of the Token Refresh Lambda function
