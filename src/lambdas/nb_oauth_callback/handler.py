@@ -58,7 +58,7 @@ ERROR_REDIRECT_URL = os.environ.get(
 # host ``https://{slug}.nationbuilder.com``. Reject malformed values before
 # either is constructed. Mirrors shared.validation.NATION_SLUG_PATTERN (this
 # Lambda is packaged without shared/, so the pattern is inlined).
-NATION_SLUG_PATTERN = re.compile(r"^[a-z0-9-]{1,63}$")
+NATION_SLUG_PATTERN = re.compile(r"^[a-z0-9-]{1,63}\Z")
 
 
 def is_valid_nation_slug(slug: Any) -> bool:

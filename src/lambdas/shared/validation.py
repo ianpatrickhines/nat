@@ -20,7 +20,7 @@ from typing import Any
 
 # NationBuilder slugs are lowercase alphanumeric plus hyphen. The 63-char ceiling
 # matches a DNS label (slugs appear as the subdomain of *.nationbuilder.com).
-NATION_SLUG_PATTERN = re.compile(r"^[a-z0-9-]{1,63}$")
+NATION_SLUG_PATTERN = re.compile(r"^[a-z0-9-]{1,63}\Z")
 
 
 class InvalidNationSlugError(ValueError):

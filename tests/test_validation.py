@@ -34,6 +34,9 @@ INVALID_SLUGS = [
     "nation!",  # punctuation
     "a" * 64,  # too long (DNS label ceiling is 63)
     "naïve",  # non-ascii
+    "legit-slug\n",  # trailing newline ($ anchor bypass — must use \Z)
+    "legit\nslug",  # embedded newline
+    "legit-slug\r\n",  # CRLF
 ]
 
 
